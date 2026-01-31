@@ -15,6 +15,7 @@ import (
 	"net/url"
 	"slices"
 	"sort"
+	"strconv"
 	"strings"
 	"unicode/utf8"
 
@@ -1386,6 +1387,7 @@ type moduleOrRepositoryContext[TReference object.BasicReference, TMetadata model
 	stableInputRootPath                *model_starlark.BarePath
 	virtualRootScopeWalkerFactory      *path.VirtualRootScopeWalkerFactory
 
+	composeTreeCount   int
 	inputRootDirectory *changeTrackingDirectory[TReference, TMetadata]
 	patchedFiles       filesystem.FileReader
 	patchedFilesWriter *model_filesystem.SectionWriter
@@ -2313,6 +2315,89 @@ func (mrc *moduleOrRepositoryContext[TReference, TMetadata]) doPath(thread *star
 		return nil, err
 	}
 	return model_starlark.NewPath(filePath, mrc), nil
+}
+
+func (mrc *moduleOrRepositoryContext[TReference, TMetadata]) doComposeTree(thread *starlark.Thread, b *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
+	mrc.maybeGetDirectoryCreationParameters()
+	if err := mrc.maybeGetStableInputRootPath(); err != nil {
+		return nil, err
+	}
+	if mrc.directoryLoadOptions == nil {
+		return nil, evaluation.ErrMissingDependency
+	}
+
+	var entries map[string]*model_starlark.BarePath
+	if err := starlark.UnpackArgs(
+		b.Name(), args, kwargs,
+		"entries", unpack.Bind(thread, &entries, unpack.Dict(unpack.String, mrc.pathUnpackerInto)),
+	); err != nil {
+		return nil, err
+	}
+
+	// Allocate a unique directory under _compose_trees/.
+	composedDirPath := mrc.stableInputRootPath.
+		Append(path.MustNewComponent("_compose_trees")).
+		Append(path.MustNewComponent(strconv.Itoa(mrc.composeTreeCount)))
+	mrc.composeTreeCount++
+
+	// Create the directory in the change tracking tree.
+	directoryResolver := &changeTrackingDirectoryNewDirectoryResolver[TReference, TMetadata]{
+		loadOptions: mrc.directoryLoadOptions,
+		stack:       util.NewNonEmptyStack(mrc.inputRootDirectory),
+	}
+	if err := path.Resolve(composedDirPath, mrc.virtualRootScopeWalkerFactory.New(directoryResolver)); err != nil {
+		return nil, fmt.Errorf("failed to create compose tree directory: %w", err)
+	}
+	composedDir := directoryResolver.stack.Peek()
+
+	// For each entry, resolve the source path in the change tracking
+	// tree and place a reference to the same file or directory into
+	// the composed directory. This materializes entries by CAS
+	// reference rather than using symlinks.
+	for _, name := range slices.Sorted(maps.Keys(entries)) {
+		targetPath := entries[name]
+
+		entryResolver := &changeTrackingDirectoryExistingFileResolver[TReference, TMetadata]{
+			loadOptions: mrc.directoryLoadOptions,
+			stack:       util.NewNonEmptyStack(mrc.inputRootDirectory),
+		}
+		if err := path.Resolve(targetPath, mrc.virtualRootScopeWalkerFactory.New(entryResolver)); err != nil {
+			return nil, fmt.Errorf("entry %#v: failed to resolve %s: %w", name, targetPath.GetUNIXString(), err)
+		}
+
+		if entryResolver.TerminalName == nil {
+			return nil, fmt.Errorf("entry %#v: %s resolves to a directory", name, targetPath.GetUNIXString())
+		}
+
+		nameComponent, ok := path.NewComponent(name)
+		if !ok {
+			return nil, fmt.Errorf("entry name %#v is not a valid path component", name)
+		}
+
+		parentDir := entryResolver.stack.Peek()
+		if err := parentDir.maybeLoadContents(mrc.directoryLoadOptions); err != nil {
+			return nil, fmt.Errorf("entry %#v: %w", name, err)
+		}
+		terminalName := *entryResolver.TerminalName
+
+		if f, ok := parentDir.files[terminalName]; ok {
+			if err := composedDir.setFile(mrc.directoryLoadOptions, nameComponent, f); err != nil {
+				return nil, fmt.Errorf("entry %#v: %w", name, err)
+			}
+		} else if child, ok := parentDir.directories[terminalName]; ok {
+			if err := composedDir.setDirectory(mrc.directoryLoadOptions, nameComponent, child); err != nil {
+				return nil, fmt.Errorf("entry %#v: %w", name, err)
+			}
+		} else if target, ok := parentDir.symlinks[terminalName]; ok {
+			if err := composedDir.setSymlink(mrc.directoryLoadOptions, nameComponent, target); err != nil {
+				return nil, fmt.Errorf("entry %#v: %w", name, err)
+			}
+		} else {
+			return nil, fmt.Errorf("entry %#v: %s does not exist", name, targetPath.GetUNIXString())
+		}
+	}
+
+	return model_starlark.NewPath(composedDirPath, mrc), nil
 }
 
 func (mrc *moduleOrRepositoryContext[TReference, TMetadata]) doRead(thread *starlark.Thread, b *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
@@ -3432,6 +3517,8 @@ func (rc *repositoryContext[TReference, TMetadata]) Attr(thread *starlark.Thread
 	mrc := rc.moduleOrRepositoryContext
 	switch name {
 	// Fields shared with module_ctx.
+	case "compose_tree":
+		return starlark.NewBuiltin("repository_ctx.compose_tree", mrc.doComposeTree), nil
 	case "download":
 		return starlark.NewBuiltin("repository_ctx.download", mrc.doDownload), nil
 	case "download_and_extract":
@@ -3489,6 +3576,7 @@ func (rc *repositoryContext[TReference, TMetadata]) Attr(thread *starlark.Thread
 func (repositoryContext[TReference, TMetadata]) AttrNames() []string {
 	return []string{
 		"attr",
+		"compose_tree",
 		"delete",
 		"download_and_extract",
 		"download",

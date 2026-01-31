@@ -418,6 +418,7 @@ func (c *baseComputer[TReference, TMetadata]) ComputeModuleExtensionReposValue(c
 
 		moduleCtx := model_starlark.NewStructFromDict[TReference, TMetadata](nil, map[string]any{
 			// Fields shared with repository_ctx.
+			"compose_tree":                       starlark.NewBuiltin("module_ctx.compose_tree", moduleContext.doComposeTree),
 			"download":                           starlark.NewBuiltin("module_ctx.download", moduleContext.doDownload),
 			"download_and_extract":               starlark.NewBuiltin("module_ctx.download_and_extract", moduleContext.doDownloadAndExtract),
 			"execute":                            starlark.NewBuiltin("module_ctx.execute", moduleContext.doExecute),
