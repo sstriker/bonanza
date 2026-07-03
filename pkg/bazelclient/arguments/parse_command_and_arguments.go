@@ -1,11 +1,39 @@
 package arguments
 
+import (
+	"strings"
+)
+
 // BuildSettingOverride contains the label of a user-defined build
 // setting for which an override was provided on the command line or in
 // a bazelrc file, and the value that is assigned to it.
 type BuildSettingOverride struct {
 	Label string
 	Value string
+}
+
+// parseBuildSettingOverrideFlag interprets command line options that
+// refer to user-defined build settings by label, such as
+// --@rules_foo//:my_flag=value or --//my/pkg:my_flag. Providing no
+// value causes boolean build settings to be enabled, while the "no"
+// prefix (e.g., --no//my/pkg:my_flag) causes them to be disabled.
+func parseBuildSettingOverrideFlag(longOptionName string, hasValue bool, value string) (string, string, bool) {
+	label := longOptionName[len("--"):]
+	if rest, ok := strings.CutPrefix(label, "no"); ok &&
+		(strings.HasPrefix(rest, "@") || strings.HasPrefix(rest, "//")) {
+		if hasValue {
+			// Negated boolean options cannot carry a value.
+			return "", "", false
+		}
+		return rest, "false", true
+	}
+	if !strings.HasPrefix(label, "@") && !strings.HasPrefix(label, "//") {
+		return "", "", false
+	}
+	if !hasValue {
+		value = "true"
+	}
+	return label, value, true
 }
 
 // Command denotes a specific subcommand of the Bazel command line tool
