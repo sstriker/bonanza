@@ -78,6 +78,7 @@ type ActionTagKeyData struct {
 	state                          protoimpl.MessageState `protogen:"open.v1"`
 	CommonTagKeyData               *tag.CommonKeyData     `protobuf:"bytes,1,opt,name=common_tag_key_data,json=commonTagKeyData,proto3" json:"common_tag_key_data,omitempty"`
 	KeyReferencesWithOverridesHash []byte                 `protobuf:"bytes,2,opt,name=key_references_with_overrides_hash,json=keyReferencesWithOverridesHash,proto3" json:"key_references_with_overrides_hash,omitempty"`
+	SemanticsVersion               uint64                 `protobuf:"varint,3,opt,name=semantics_version,json=semanticsVersion,proto3" json:"semantics_version,omitempty"`
 	unknownFields                  protoimpl.UnknownFields
 	sizeCache                      protoimpl.SizeCache
 }
@@ -124,6 +125,13 @@ func (x *ActionTagKeyData) GetKeyReferencesWithOverridesHash() []byte {
 		return x.KeyReferencesWithOverridesHash
 	}
 	return nil
+}
+
+func (x *ActionTagKeyData) GetSemanticsVersion() uint64 {
+	if x != nil {
+		return x.SemanticsVersion
+	}
+	return 0
 }
 
 type DependenciesHashRecord struct {
@@ -550,10 +558,11 @@ var File_bonanza_build_pkg_proto_model_evaluation_cache_cache_proto protoreflect
 
 const file_bonanza_build_pkg_proto_model_evaluation_cache_cache_proto_rawDesc = "" +
 	"\n" +
-	":bonanza.build/pkg/proto/model/evaluation/cache/cache.proto\x12\x1ebonanza.model.evaluation.cache\x1a-bonanza.build/pkg/proto/model/core/core.proto\x1a9bonanza.build/pkg/proto/model/evaluation/evaluation.proto\x1a+bonanza.build/pkg/proto/model/tag/tag.proto\x1a\x1fgoogle/protobuf/timestamp.proto\"\xaf\x01\n" +
+	":bonanza.build/pkg/proto/model/evaluation/cache/cache.proto\x12\x1ebonanza.model.evaluation.cache\x1a-bonanza.build/pkg/proto/model/core/core.proto\x1a9bonanza.build/pkg/proto/model/evaluation/evaluation.proto\x1a+bonanza.build/pkg/proto/model/tag/tag.proto\x1a\x1fgoogle/protobuf/timestamp.proto\"\xdc\x01\n" +
 	"\x10ActionTagKeyData\x12O\n" +
 	"\x13common_tag_key_data\x18\x01 \x01(\v2 .bonanza.model.tag.CommonKeyDataR\x10commonTagKeyData\x12J\n" +
-	"\"key_references_with_overrides_hash\x18\x02 \x01(\fR\x1ekeyReferencesWithOverridesHash\"\xec\x01\n" +
+	"\"key_references_with_overrides_hash\x18\x02 \x01(\fR\x1ekeyReferencesWithOverridesHash\x12+\n" +
+	"\x11semantics_version\x18\x03 \x01(\x04R\x10semanticsVersion\"\xec\x01\n" +
 	"\x16DependenciesHashRecord\x12B\n" +
 	"\rkey_reference\x18\x01 \x01(\v2\x1d.bonanza.model.core.ReferenceR\fkeyReference\x12>\n" +
 	"\rmessage_value\x18\x02 \x01(\v2\x17.bonanza.model.core.AnyH\x00R\fmessageValue\x12E\n" +
