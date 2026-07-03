@@ -123,6 +123,15 @@ func (l Label[TReference, TMetadata]) Attr(thread *starlark.Thread, name string)
 				return NewLabel[TReference, TMetadata](l.value.AppendTargetName(targetName)), nil
 			},
 		), nil
+	case "workspace_name":
+		// Even though Bazel documents this field as being
+		// deprecated in favor of Label.repo_name, we provide it
+		// regardless, as many rule sets still depend on it.
+		canonicalLabel, err := l.value.AsCanonical()
+		if err != nil {
+			return nil, err
+		}
+		return starlark.String(canonicalLabel.GetCanonicalPackage().GetCanonicalRepo().String()), nil
 	case "workspace_root":
 		canonicalLabel, err := l.value.AsCanonical()
 		if err != nil {
@@ -144,6 +153,7 @@ var labelAttrNames = []string{
 	"relative",
 	"repo_name",
 	"same_package_label",
+	"workspace_name",
 	"workspace_root",
 }
 
