@@ -1,0 +1,15 @@
+platform(
+    name = "repo",
+    exec_pkix_public_key = "MCowBQYDK2VuAyEAM6QayAzb9lMiEsUBmrMV3ICThaM5NLGv0QnyC3H9hWw=",
+    repository_os_arch = "amd64",
+    repository_os_environ = {
+        "HOME": "/root",
+        "PATH": "/usr/local/bin:/usr/local/sbin:/usr/bin:/usr/sbin:/bin:/sbin",
+    },
+    repository_os_name = "linux",
+)
+
+platform(
+    name = "exec",
+    exec_pkix_public_key = "MCowBQYDK2VuAyEAM6QayAzb9lMiEsUBmrMV3ICThaM5NLGv0QnyC3H9hWw=",
+)

@@ -1,0 +1,42 @@
+load(":defs.bzl", "repo_info")
+
+repo_info(
+    name = "repo_info",
+    numbers = [4, 5, 6],
+)
+
+genrule(
+    name = "hello",
+    outs = ["hello.txt"],
+    cmd = "echo 'Hello from patched bonanza' > $@",
+)
+
+# Verifies, on the worker, that the artifacts produced by the targets
+# above have the expected contents. If any assertion fails, the build
+# fails.
+genrule(
+    name = "verify",
+    srcs = [
+        ":hello",
+        ":repo_info",
+    ],
+    outs = ["verify.txt"],
+    cmd = "grep -q 'Hello from patched bonanza' $(location :hello) && " +
+          "grep -q 'module=testproject' $(location :repo_info) && " +
+          "grep -q 'version=None' $(location :repo_info) && " +
+          "grep -q 'repo=\"testproject+\"' $(location :repo_info) && " +
+          "grep -q 'repository_name=\"@testproject+\"' $(location :repo_info) && " +
+          "grep -q 'package=\"\"' $(location :repo_info) && " +
+          "grep -q 'workspace_name=\"testproject+\"' $(location :repo_info) && " +
+          "grep -q 'sum(\\[4, 5, 6\\]) = 15' $(location :repo_info) && " +
+          "cat $(location :hello) $(location :repo_info) > $@",
+)
+
+filegroup(
+    name = "all",
+    srcs = [
+        ":hello",
+        ":repo_info",
+        ":verify",
+    ],
+)
