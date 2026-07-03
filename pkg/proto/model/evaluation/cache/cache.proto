@@ -17,6 +17,14 @@ message ActionTagKeyData {
   // Homomorphic hash of the references of keys for which overrides were
   // specified in the bonanza.model.evaluation.Action message.
   bytes key_references_with_overrides_hash = 2;
+
+  // Version of the evaluation semantics that the worker implements.
+  // Workers must increase this value whenever they are changed in ways
+  // that cause evaluation of identical keys with identical dependency
+  // values to yield different results. By making the version part of
+  // the tag key hash, results that were cached by workers implementing
+  // older semantics are not returned by newer ones, and vice versa.
+  uint64 semantics_version = 3;
 }
 
 message DependenciesHashRecord {

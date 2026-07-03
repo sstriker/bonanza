@@ -64,6 +64,7 @@ go_library(
         "root_module.go",
         "rule_implementation_wrappers.go",
         "select.go",
+        "semantics_version.go",
         "stable_input_root_path.go",
         "successful_action_result.go",
         "target.go",

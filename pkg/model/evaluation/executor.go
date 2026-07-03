@@ -56,12 +56,21 @@ type executor struct {
 	dagUploader                 dag.Uploader[object.InstanceName, object.GlobalReference]
 	tagResolver                 tag.Resolver[object.Namespace]
 	cacheTagSignaturePrivateKey ed25519.PrivateKey
+	semanticsVersion            uint64
 	uploadConcurrency           uint32
 	clock                       clock.Clock
 }
 
 // NewExecutor creates a remote worker that is capable of executing
 // remote evaluation requests.
+//
+// The provided semantics version is included in the tag keys under
+// which evaluation results are cached. The caller must provide a value
+// that is increased whenever the computer returned by the computer
+// factory is changed in ways that cause evaluation of identical keys
+// with identical dependency values to yield different results, so that
+// stale results cached by workers implementing older semantics are not
+// reused.
 func NewExecutor(
 	objectDownloader object.Downloader[object.GlobalReference],
 	computerFactory ComputerFactory[buffered.Reference, *model_core.LeakCheckingReferenceMetadata[buffered.ReferenceMetadata]],
@@ -70,6 +79,7 @@ func NewExecutor(
 	dagUploader dag.Uploader[object.InstanceName, object.GlobalReference],
 	tagResolver tag.Resolver[object.Namespace],
 	cacheTagSignaturePrivateKey ed25519.PrivateKey,
+	semanticsVersion uint64,
 	uploadConcurrency uint32,
 	clock clock.Clock,
 ) remoteworker.Executor[*model_executewithstorage.Action[object.GlobalReference], model_core.Decodable[object.LocalReference], model_core.Decodable[object.LocalReference]] {
@@ -81,6 +91,7 @@ func NewExecutor(
 		dagUploader:                 dagUploader,
 		tagResolver:                 tagResolver,
 		cacheTagSignaturePrivateKey: cacheTagSignaturePrivateKey,
+		semanticsVersion:            semanticsVersion,
 		uploadConcurrency:           uploadConcurrency,
 		clock:                       clock,
 	}
@@ -230,6 +241,7 @@ func (e *executor) Execute(ctx context.Context, action *model_executewithstorage
 						ObjectEncoders:     action.Encoders,
 					},
 					KeyReferencesWithOverridesHash: keyReferencesWithOverridesHash[:],
+					SemanticsVersion:               e.semanticsVersion,
 				}
 			},
 		).SortAndSetReferences()

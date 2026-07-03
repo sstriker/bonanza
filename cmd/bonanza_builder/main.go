@@ -167,6 +167,7 @@ func main() {
 							tag_pb.NewResolverClient(storageGRPCClient),
 						),
 						cacheTagSignaturePrivateKey,
+						model_analysis.SemanticsVersion,
 						configuration.UploadConcurrency,
 						clock.SystemClock,
 					),
