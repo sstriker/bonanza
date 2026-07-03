@@ -40,7 +40,7 @@ local shard = std.extVar('SHARD');
     maximumGetAttempts: 16,
     maximumPutAttempts: 64,
   },
-  leasesMapLeaseCompletenessDuration: '120s',
+  leasesMapLeaseCompletenessDuration: '1800s',
 
   tagsMap: {
     onBlockDevice: { file: {
