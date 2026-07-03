@@ -350,6 +350,45 @@ func GetBuiltins[TReference object.BasicReference, TMetadata model_core.Referenc
 					return NewAttr[TReference, TMetadata](attrType, defaultValue), nil
 				},
 			),
+			"int_list": starlark.NewBuiltin(
+				"attr.int_list",
+				func(thread *starlark.Thread, b *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
+					if len(args) > 2 {
+						return nil, fmt.Errorf("%s: got %d positional arguments, want at most 2", b.Name(), len(args))
+					}
+
+					allowEmpty := true
+					configurable := true
+					var defaultValue starlark.Value = starlark.NewList(nil)
+					doc := ""
+					mandatory := false
+					if err := starlark.UnpackArgs(
+						b.Name(), args, kwargs,
+						// Positional arguments.
+						"mandatory?", unpack.Bind(thread, &mandatory, unpack.Bool),
+						"allow_empty?", unpack.Bind(thread, &allowEmpty, unpack.Bool),
+						// Keyword arguments.
+						"configurable?", unpack.Bind(thread, &configurable, unpack.Bool),
+						"default?", &defaultValue,
+						"doc?", unpack.Bind(thread, &doc, unpack.String),
+					); err != nil {
+						return nil, err
+					}
+
+					attrType := NewIntListAttrType[TReference, TMetadata]()
+					if mandatory {
+						defaultValue = nil
+					} else {
+						if err := unpack.Or([]unpack.UnpackerInto[starlark.Value]{
+							unpack.Canonicalize(namedFunctionUnpackerInto),
+							unpack.Canonicalize(attrType.GetCanonicalizer(CurrentFilePackage(thread, 1))),
+						}).UnpackInto(thread, defaultValue, &defaultValue); err != nil {
+							return nil, fmt.Errorf("%s: for parameter default: %w", b.Name(), err)
+						}
+					}
+					return NewAttr[TReference, TMetadata](attrType, defaultValue), nil
+				},
+			),
 			"label": starlark.NewBuiltin(
 				"attr.label",
 				func(thread *starlark.Thread, b *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
@@ -687,18 +726,18 @@ func GetBuiltins[TReference object.BasicReference, TMetadata model_core.Referenc
 						return nil, fmt.Errorf("%s: got %d positional arguments, want at most 2", b.Name(), len(args))
 					}
 
-					mandatory := false
-					var allowEmpty bool
+					allowEmpty := true
 					configurable := true
 					var defaultValue starlark.Value = starlark.NewList(nil)
 					doc := ""
+					mandatory := false
 					if err := starlark.UnpackArgs(
 						b.Name(), args, kwargs,
 						// Positional arguments.
-						"configurable?", unpack.Bind(thread, &configurable, unpack.Bool),
 						"mandatory?", unpack.Bind(thread, &mandatory, unpack.Bool),
 						"allow_empty?", unpack.Bind(thread, &allowEmpty, unpack.Bool),
 						// Keyword arguments.
+						"configurable?", unpack.Bind(thread, &configurable, unpack.Bool),
 						"default?", &defaultValue,
 						"doc?", unpack.Bind(thread, &doc, unpack.String),
 					); err != nil {
@@ -1235,6 +1274,51 @@ func GetBuiltins[TReference object.BasicReference, TMetadata model_core.Referenc
 					return labelSetting[TReference, TMetadata](thread, b, args, kwargs, false)
 				},
 			),
+			"module_name": starlark.NewBuiltin(
+				"native.module_name",
+				func(thread *starlark.Thread, b *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
+					canonicalPackage := thread.Local(CanonicalPackageKey)
+					if canonicalPackage == nil {
+						return nil, errors.New("module name cannot be obtained from within this context")
+					}
+
+					if err := starlark.UnpackArgs(b.Name(), args, kwargs); err != nil {
+						return nil, err
+					}
+
+					// Return the name of the module associated
+					// with the repo of the package that is
+					// currently being evaluated. For repos that
+					// are created by module extensions, this
+					// yields the name of the module hosting the
+					// extension.
+					moduleInstance := canonicalPackage.(pg_label.CanonicalPackage).
+						GetCanonicalRepo().
+						GetModuleInstance()
+					return starlark.String(moduleInstance.GetModule().String()), nil
+				},
+			),
+			"module_version": starlark.NewBuiltin(
+				"native.module_version",
+				func(thread *starlark.Thread, b *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
+					canonicalPackage := thread.Local(CanonicalPackageKey)
+					if canonicalPackage == nil {
+						return nil, errors.New("module version cannot be obtained from within this context")
+					}
+
+					if err := starlark.UnpackArgs(b.Name(), args, kwargs); err != nil {
+						return nil, err
+					}
+
+					moduleInstance := canonicalPackage.(pg_label.CanonicalPackage).
+						GetCanonicalRepo().
+						GetModuleInstance()
+					if moduleVersion, ok := moduleInstance.GetModuleVersion(); ok {
+						return starlark.String(moduleVersion.String()), nil
+					}
+					return starlark.None, nil
+				},
+			),
 			"package_group": starlark.NewBuiltin(
 				"native.package_group",
 				func(thread *starlark.Thread, b *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
@@ -1315,6 +1399,39 @@ func GetBuiltins[TReference object.BasicReference, TMetadata model_core.Referenc
 						return nil, err
 					}
 					return NewLabel[TReference, TMetadata](input), nil
+				},
+			),
+			"repo_name": starlark.NewBuiltin(
+				"native.repo_name",
+				func(thread *starlark.Thread, b *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
+					canonicalPackage := thread.Local(CanonicalPackageKey)
+					if canonicalPackage == nil {
+						return nil, errors.New("repo name cannot be obtained from within this context")
+					}
+
+					if err := starlark.UnpackArgs(b.Name(), args, kwargs); err != nil {
+						return nil, err
+					}
+
+					return starlark.String(canonicalPackage.(pg_label.CanonicalPackage).GetCanonicalRepo().String()), nil
+				},
+			),
+			"repository_name": starlark.NewBuiltin(
+				"native.repository_name",
+				func(thread *starlark.Thread, b *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
+					// Deprecated predecessor of
+					// native.repo_name() that prefixes the
+					// canonical repo name with a single "@".
+					canonicalPackage := thread.Local(CanonicalPackageKey)
+					if canonicalPackage == nil {
+						return nil, errors.New("repository name cannot be obtained from within this context")
+					}
+
+					if err := starlark.UnpackArgs(b.Name(), args, kwargs); err != nil {
+						return nil, err
+					}
+
+					return starlark.String("@" + canonicalPackage.(pg_label.CanonicalPackage).GetCanonicalRepo().String()), nil
 				},
 			),
 		}),
