@@ -1201,11 +1201,6 @@ func GetBuiltins[TReference object.BasicReference, TMetadata model_core.Referenc
 			"existing_rule": starlark.NewBuiltin(
 				"native.existing_rule",
 				func(thread *starlark.Thread, b *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
-					targetRegistrar, ok := thread.Local(TargetRegistrarKey).(*TargetRegistrar[TReference, TMetadata])
-					if !ok || targetRegistrar == nil {
-						return nil, errors.New("existing rules cannot be obtained from within this context")
-					}
-
 					var name string
 					if err := starlark.UnpackArgs(
 						b.Name(), args, kwargs,
@@ -1214,26 +1209,45 @@ func GetBuiltins[TReference object.BasicReference, TMetadata model_core.Referenc
 						return nil, err
 					}
 
-					existingRule := targetRegistrar.GetExistingRule(name)
-					if existingRule == nil {
-						return starlark.None, nil
+					if targetRegistrar, ok := thread.Local(TargetRegistrarKey).(*TargetRegistrar[TReference, TMetadata]); ok && targetRegistrar != nil {
+						existingRule := targetRegistrar.GetExistingRule(name)
+						if existingRule == nil {
+							return starlark.None, nil
+						}
+						return existingRuleToDict(thread, existingRule)
 					}
-					return existingRuleToDict(thread, existingRule)
+					if repoRegistrar, ok := thread.Local(RepoRegistrarKey).(*RepoRegistrar[TMetadata]); ok && repoRegistrar != nil {
+						// Within module extensions, report
+						// repos that were declared by the
+						// extension so far.
+						existingRepo := repoRegistrar.GetExistingRepo(thread, name)
+						if existingRepo == nil {
+							return starlark.None, nil
+						}
+						return existingRuleToDict(thread, existingRepo)
+					}
+					return nil, errors.New("existing rules cannot be obtained from within this context")
 				},
 			),
 			"existing_rules": starlark.NewBuiltin(
 				"native.existing_rules",
 				func(thread *starlark.Thread, b *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
-					targetRegistrar, ok := thread.Local(TargetRegistrarKey).(*TargetRegistrar[TReference, TMetadata])
-					if !ok || targetRegistrar == nil {
-						return nil, errors.New("existing rules cannot be obtained from within this context")
-					}
-
 					if err := starlark.UnpackArgs(b.Name(), args, kwargs); err != nil {
 						return nil, err
 					}
 
-					existingRules := targetRegistrar.GetExistingRules()
+					var existingRules map[string]map[string]starlark.Value
+					if targetRegistrar, ok := thread.Local(TargetRegistrarKey).(*TargetRegistrar[TReference, TMetadata]); ok && targetRegistrar != nil {
+						existingRules = targetRegistrar.GetExistingRules()
+					} else if repoRegistrar, ok := thread.Local(RepoRegistrarKey).(*RepoRegistrar[TMetadata]); ok && repoRegistrar != nil {
+						// Within module extensions, report
+						// repos that were declared by the
+						// extension so far.
+						existingRules = repoRegistrar.GetExistingRepos(thread)
+					} else {
+						return nil, errors.New("existing rules cannot be obtained from within this context")
+					}
+
 					result := starlark.NewDict(len(existingRules))
 					for _, name := range slices.Sorted(maps.Keys(existingRules)) {
 						existingRule, err := existingRuleToDict(thread, existingRules[name])
