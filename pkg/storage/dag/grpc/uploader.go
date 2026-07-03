@@ -175,6 +175,17 @@ func (u *uploader) uploadDAG(ctx context.Context, rootReference object.GlobalRef
 			}
 			responseTypeRequestObject, ok := response.Type.(*dag_pb.UploadDagsResponse_RequestObject_)
 			if !ok {
+				// The server may abort the DAG before all
+				// objects have been requested, e.g. if storage
+				// is unable to ingest one of the objects that
+				// was sent previously. Surface the reported
+				// error instead of masking it.
+				if responseTypeFinalizeDAG, ok := response.Type.(*dag_pb.UploadDagsResponse_FinalizeDag_); ok {
+					if err := status.ErrorProto(responseTypeFinalizeDAG.FinalizeDag.Status); err != nil {
+						return util.StatusWrap(err, "Server finalized DAG before requesting all objects")
+					}
+					return status.Error(codes.Internal, "Server finalized DAG before requesting all objects")
+				}
 				return status.Error(codes.Internal, "Message from server did not contain an object request")
 			}
 			requestObject := responseTypeRequestObject.RequestObject
