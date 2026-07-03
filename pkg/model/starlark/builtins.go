@@ -75,12 +75,23 @@ const (
 	// Starlark thread that is evaluating a BUILD file. It is
 	// invoked when glob() directives are encountered.
 	GlobExpanderKey = "glob_expander"
+	// SubpackagesExpanderKey is the key under which an instance of
+	// SubpackagesExpander is stored in the thread local variables
+	// of a Starlark thread that is evaluating a BUILD file. It is
+	// invoked when native.subpackages() is called.
+	SubpackagesExpanderKey = "subpackages_expander"
 )
 
 // GlobExpander is invoked when a glob directive is encountered in a
 // BUILD file. It is responsible for performing the glob expansion and
 // returning relative pathnames that were matched.
 type GlobExpander = func(include, exclude []string, includeDirectories bool) ([]string, error)
+
+// SubpackagesExpander is invoked when native.subpackages() is called
+// from within a BUILD file. It is responsible for returning the paths
+// of direct subpackages of the current package that match the provided
+// patterns, relative to the current package.
+type SubpackagesExpander = func(include, exclude []string) ([]string, error)
 
 func labelSetting[TReference object.BasicReference, TMetadata model_core.ReferenceMetadata](thread *starlark.Thread, b *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple, flag bool) (starlark.Value, error) {
 	targetRegistrar := thread.Local(TargetRegistrarKey).(*TargetRegistrar[TReference, TMetadata])
@@ -142,6 +153,20 @@ func stringDictToStructFields(in starlark.StringDict) map[string]any {
 		out[k] = v
 	}
 	return out
+}
+
+// existingRuleToDict converts information on a previously instantiated
+// rule target to a Starlark dict, so that it can be returned by
+// native.existing_rule() and native.existing_rules().
+func existingRuleToDict(thread *starlark.Thread, existingRule map[string]starlark.Value) (starlark.Value, error) {
+	result := starlark.NewDict(len(existingRule))
+	for _, key := range slices.Sorted(maps.Keys(existingRule)) {
+		if err := result.SetKey(thread, starlark.String(key), existingRule[key]); err != nil {
+			return nil, err
+		}
+	}
+	result.Freeze()
+	return result, nil
 }
 
 var (
@@ -229,14 +254,25 @@ func GetBuiltins[TReference object.BasicReference, TMetadata model_core.Referenc
 		"analysis_test_transition": starlark.NewBuiltin(
 			"analysis_test_transition",
 			func(thread *starlark.Thread, b *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
-				var settings map[string]string
+				var settings map[string]starlark.Value
 				if err := starlark.UnpackArgs(
 					b.Name(), args, kwargs,
-					"settings", unpack.Bind(thread, &settings, unpack.Dict(unpack.String, unpack.String)),
+					// Don't convert the keys to labels. The
+					// provided strings should not be normalized,
+					// as they are resolved relative to the
+					// package declaring the transition when the
+					// transition is applied.
+					"settings", unpack.Bind(thread, &settings, unpack.Dict(unpack.String, unpack.Any)),
 				); err != nil {
 					return nil, err
 				}
-				return nil, errors.New("not implemented")
+				return NewTransition(
+					NewAnalysisTestTransitionDefinition[TReference, TMetadata](
+						nil,
+						settings,
+						CurrentFilePackage(thread, 1),
+					),
+				), nil
 			},
 		),
 		"aspect": starlark.NewBuiltin(
@@ -1162,6 +1198,55 @@ func GetBuiltins[TReference object.BasicReference, TMetadata model_core.Referenc
 					return currentCtx.(starlark.Value), nil
 				},
 			),
+			"existing_rule": starlark.NewBuiltin(
+				"native.existing_rule",
+				func(thread *starlark.Thread, b *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
+					targetRegistrar, ok := thread.Local(TargetRegistrarKey).(*TargetRegistrar[TReference, TMetadata])
+					if !ok || targetRegistrar == nil {
+						return nil, errors.New("existing rules cannot be obtained from within this context")
+					}
+
+					var name string
+					if err := starlark.UnpackArgs(
+						b.Name(), args, kwargs,
+						"name", unpack.Bind(thread, &name, unpack.String),
+					); err != nil {
+						return nil, err
+					}
+
+					existingRule := targetRegistrar.GetExistingRule(name)
+					if existingRule == nil {
+						return starlark.None, nil
+					}
+					return existingRuleToDict(thread, existingRule)
+				},
+			),
+			"existing_rules": starlark.NewBuiltin(
+				"native.existing_rules",
+				func(thread *starlark.Thread, b *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
+					targetRegistrar, ok := thread.Local(TargetRegistrarKey).(*TargetRegistrar[TReference, TMetadata])
+					if !ok || targetRegistrar == nil {
+						return nil, errors.New("existing rules cannot be obtained from within this context")
+					}
+
+					if err := starlark.UnpackArgs(b.Name(), args, kwargs); err != nil {
+						return nil, err
+					}
+
+					existingRules := targetRegistrar.GetExistingRules()
+					result := starlark.NewDict(len(existingRules))
+					for _, name := range slices.Sorted(maps.Keys(existingRules)) {
+						existingRule, err := existingRuleToDict(thread, existingRules[name])
+						if err != nil {
+							return nil, err
+						}
+						if err := result.SetKey(thread, starlark.String(name), existingRule); err != nil {
+							return nil, err
+						}
+					}
+					return result, nil
+				},
+			),
 			"exports_files": starlark.NewBuiltin(
 				"native.exports_files",
 				func(thread *starlark.Thread, b *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
@@ -1432,6 +1517,41 @@ func GetBuiltins[TReference object.BasicReference, TMetadata model_core.Referenc
 					}
 
 					return starlark.String("@" + canonicalPackage.(pg_label.CanonicalPackage).GetCanonicalRepo().String()), nil
+				},
+			),
+			"subpackages": starlark.NewBuiltin(
+				"native.subpackages",
+				func(thread *starlark.Thread, b *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
+					subpackagesExpander := thread.Local(SubpackagesExpanderKey)
+					if subpackagesExpander == nil {
+						return nil, errors.New("subpackages cannot be expanded within this context")
+					}
+
+					var include []string
+					var exclude []string
+					allowEmpty := false
+					if err := starlark.UnpackArgs(
+						b.Name(), args, kwargs,
+						"include", unpack.Bind(thread, &include, unpack.List(unpack.String)),
+						"exclude?", unpack.Bind(thread, &exclude, unpack.List(unpack.String)),
+						"allow_empty?", unpack.Bind(thread, &allowEmpty, unpack.Bool),
+					); err != nil {
+						return nil, err
+					}
+
+					subpackages, err := subpackagesExpander.(SubpackagesExpander)(include, exclude)
+					if err != nil {
+						return nil, err
+					}
+					if len(subpackages) == 0 && !allowEmpty {
+						return nil, errors.New("subpackages() does not match any subpackages")
+					}
+
+					elements := make([]starlark.Value, 0, len(subpackages))
+					for _, subpackage := range subpackages {
+						elements = append(elements, starlark.String(subpackage))
+					}
+					return starlark.NewList(elements), nil
 				},
 			),
 		}),

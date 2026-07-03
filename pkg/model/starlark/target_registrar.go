@@ -12,6 +12,8 @@ import (
 	model_encoding "bonanza.build/pkg/model/encoding"
 	model_starlark_pb "bonanza.build/pkg/proto/model/starlark"
 	"bonanza.build/pkg/storage/object"
+
+	"go.starlark.net/starlark"
 )
 
 // TargetRegistrar can be called into by functions like alias(),
@@ -28,6 +30,7 @@ type TargetRegistrar[TReference object.BasicReference, TMetadata model_core.Refe
 	defaultInheritableAttrs    model_core.Message[*model_starlark_pb.InheritableAttrs, TReference]
 	setDefaultInheritableAttrs bool
 	targets                    map[string]model_core.PatchedMessage[*model_starlark_pb.Target_Definition, TMetadata]
+	existingRules              map[string]map[string]starlark.Value
 }
 
 // NewTargetRegistrar creates a TargetRegistrar that at the time of
@@ -42,7 +45,28 @@ func NewTargetRegistrar[TReference object.BasicReference, TMetadata model_core.R
 		objectManager:           objectManager,
 		defaultInheritableAttrs: defaultInheritableAttrs,
 		targets:                 map[string]model_core.PatchedMessage[*model_starlark_pb.Target_Definition, TMetadata]{},
+		existingRules:           map[string]map[string]starlark.Value{},
 	}
+}
+
+// registerExistingRule records information on a rule target that was
+// instantiated in the current package, so that it can be reported
+// through native.existing_rule() and native.existing_rules().
+func (tr *TargetRegistrar[TReference, TMetadata]) registerExistingRule(name string, attrs map[string]starlark.Value) {
+	tr.existingRules[name] = attrs
+}
+
+// GetExistingRule returns information on a previously instantiated rule
+// target with a given name, or nil if no rule target with that name
+// exists in the current package.
+func (tr *TargetRegistrar[TReference, TMetadata]) GetExistingRule(name string) map[string]starlark.Value {
+	return tr.existingRules[name]
+}
+
+// GetExistingRules returns information on all rule targets that have
+// been instantiated in the current package so far.
+func (tr *TargetRegistrar[TReference, TMetadata]) GetExistingRules() map[string]map[string]starlark.Value {
+	return tr.existingRules
 }
 
 // Discard all targets, so that any resources associated with them are

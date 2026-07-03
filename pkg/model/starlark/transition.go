@@ -3,6 +3,8 @@ package starlark
 import (
 	"errors"
 	"fmt"
+	"maps"
+	"slices"
 
 	pg_label "bonanza.build/pkg/label"
 	model_core "bonanza.build/pkg/model/core"
@@ -277,6 +279,109 @@ func (td *userDefinedTransitionDefinition[TReference, TMetadata]) EncodeUserDefi
 }
 
 func (td *userDefinedTransitionDefinition[TReference, TMetadata]) EncodeValue(path map[starlark.Value]struct{}, currentIdentifier *pg_label.CanonicalStarlarkIdentifier, options *ValueEncodingOptions[TReference, TMetadata]) (model_core.PatchedMessage[*model_starlark_pb.Value, TMetadata], bool, error) {
+	userDefined, needsCode, err := td.encodeUserDefinedTransition(path, currentIdentifier, options)
+	if err != nil {
+		return model_core.PatchedMessage[*model_starlark_pb.Value, TMetadata]{}, false, err
+	}
+	return model_core.MustBuildPatchedMessage(
+		func(patcher *model_core.ReferenceMessagePatcher[TMetadata]) *model_starlark_pb.Value {
+			return &model_starlark_pb.Value{
+				Kind: &model_starlark_pb.Value_Transition{
+					Transition: &model_starlark_pb.Transition{
+						Kind: &model_starlark_pb.Transition_UserDefined_{
+							UserDefined: userDefined.Merge(patcher),
+						},
+					},
+				},
+			}
+		},
+	), needsCode, nil
+}
+
+type analysisTestTransitionDefinition[TReference any, TMetadata model_core.ReferenceMetadata] struct {
+	LateNamedValue
+
+	settings         map[string]starlark.Value
+	canonicalPackage pg_label.CanonicalPackage
+}
+
+// NewAnalysisTestTransitionDefinition creates an object holding the
+// properties of a transition created through
+// analysis_test_transition(). Such transitions don't have an
+// implementation function. Instead, they apply a constant set of
+// changes to build settings.
+func NewAnalysisTestTransitionDefinition[TReference any, TMetadata model_core.ReferenceMetadata](identifier *pg_label.CanonicalStarlarkIdentifier, settings map[string]starlark.Value, canonicalPackage pg_label.CanonicalPackage) TransitionDefinition[TReference, TMetadata] {
+	return &analysisTestTransitionDefinition[TReference, TMetadata]{
+		LateNamedValue: LateNamedValue{
+			Identifier: identifier,
+		},
+		settings:         settings,
+		canonicalPackage: canonicalPackage,
+	}
+}
+
+func (td *analysisTestTransitionDefinition[TReference, TMetadata]) encodeUserDefinedTransition(path map[starlark.Value]struct{}, currentIdentifier *pg_label.CanonicalStarlarkIdentifier, options *ValueEncodingOptions[TReference, TMetadata]) (model_core.PatchedMessage[*model_starlark_pb.Transition_UserDefined, TMetadata], bool, error) {
+	if td.Identifier != nil && (currentIdentifier == nil || *currentIdentifier != *td.Identifier) {
+		// Not the canonical identifier under which this
+		// transition is known. Emit a reference.
+		return model_core.NewSimplePatchedMessage[TMetadata](
+			&model_starlark_pb.Transition_UserDefined{
+				Kind: &model_starlark_pb.Transition_UserDefined_Identifier{
+					Identifier: td.Identifier.String(),
+				},
+			},
+		), false, nil
+	}
+
+	needsCode := false
+	patcher := model_core.NewReferenceMessagePatcher[TMetadata]()
+	settings := make([]*model_starlark_pb.Transition_UserDefined_AnalysisTest_Setting, 0, len(td.settings))
+	for _, label := range slices.Sorted(maps.Keys(td.settings)) {
+		value, valueNeedsCode, err := EncodeValue[TReference, TMetadata](td.settings[label], path, nil, options)
+		if err != nil {
+			return model_core.PatchedMessage[*model_starlark_pb.Transition_UserDefined, TMetadata]{}, false, fmt.Errorf("setting %#v: %w", label, err)
+		}
+		needsCode = needsCode || valueNeedsCode
+		settings = append(settings, &model_starlark_pb.Transition_UserDefined_AnalysisTest_Setting{
+			Label: label,
+			Value: value.Merge(patcher),
+		})
+	}
+	return model_core.NewPatchedMessage(
+		&model_starlark_pb.Transition_UserDefined{
+			Kind: &model_starlark_pb.Transition_UserDefined_AnalysisTest_{
+				AnalysisTest: &model_starlark_pb.Transition_UserDefined_AnalysisTest{
+					Settings:         settings,
+					CanonicalPackage: td.canonicalPackage.String(),
+				},
+			},
+		},
+		patcher,
+	), needsCode, nil
+}
+
+func (td *analysisTestTransitionDefinition[TReference, TMetadata]) Encode(path map[starlark.Value]struct{}, options *ValueEncodingOptions[TReference, TMetadata]) (model_core.PatchedMessage[*model_starlark_pb.Transition, TMetadata], error) {
+	userDefined, _, err := td.encodeUserDefinedTransition(path, nil, options)
+	if err != nil {
+		return model_core.PatchedMessage[*model_starlark_pb.Transition, TMetadata]{}, err
+	}
+	return model_core.MustBuildPatchedMessage(
+		func(patcher *model_core.ReferenceMessagePatcher[TMetadata]) *model_starlark_pb.Transition {
+			return &model_starlark_pb.Transition{
+				Kind: &model_starlark_pb.Transition_UserDefined_{
+					UserDefined: userDefined.Merge(patcher),
+				},
+			}
+		},
+	), nil
+}
+
+func (td *analysisTestTransitionDefinition[TReference, TMetadata]) EncodeUserDefinedTransition(path map[starlark.Value]struct{}, options *ValueEncodingOptions[TReference, TMetadata]) (model_core.PatchedMessage[*model_starlark_pb.Transition_UserDefined, TMetadata], error) {
+	userDefined, _, err := td.encodeUserDefinedTransition(path, nil, options)
+	return userDefined, err
+}
+
+func (td *analysisTestTransitionDefinition[TReference, TMetadata]) EncodeValue(path map[starlark.Value]struct{}, currentIdentifier *pg_label.CanonicalStarlarkIdentifier, options *ValueEncodingOptions[TReference, TMetadata]) (model_core.PatchedMessage[*model_starlark_pb.Value, TMetadata], bool, error) {
 	userDefined, needsCode, err := td.encodeUserDefinedTransition(path, currentIdentifier, options)
 	if err != nil {
 		return model_core.PatchedMessage[*model_starlark_pb.Value, TMetadata]{}, false, err

@@ -503,6 +503,7 @@ func (c *baseComputer[TReference, TMetadata]) performUserDefinedTransition(
 	}
 
 	var transitionDefinition model_core.Message[*model_starlark_pb.Transition_UserDefined_Definition, TReference]
+	var analysisTest model_core.Message[*model_starlark_pb.Transition_UserDefined_AnalysisTest, TReference]
 	switch t := transition.Message.Kind.(type) {
 	case *model_starlark_pb.Transition_UserDefined_Identifier:
 		transitionIdentifier, err := label.NewCanonicalStarlarkIdentifier(t.Identifier)
@@ -524,15 +525,83 @@ func (c *baseComputer[TReference, TMetadata]) performUserDefinedTransition(
 		if !ok {
 			return nil, nil, fmt.Errorf("%#v is not a user-defined transition", transitionIdentifier.String())
 		}
-		udtd, ok := udt.UserDefined.Kind.(*model_starlark_pb.Transition_UserDefined_Definition_)
-		if !ok {
+		switch udtk := udt.UserDefined.Kind.(type) {
+		case *model_starlark_pb.Transition_UserDefined_Definition_:
+			transitionDefinition = model_core.Nested(transitionValue, udtk.Definition)
+		case *model_starlark_pb.Transition_UserDefined_AnalysisTest_:
+			analysisTest = model_core.Nested(transitionValue, udtk.AnalysisTest)
+		default:
 			return nil, nil, fmt.Errorf("%#v is not a user-defined transition definition", transitionIdentifier.String())
 		}
-		transitionDefinition = model_core.Nested(transitionValue, udtd.Definition)
 	case *model_starlark_pb.Transition_UserDefined_Definition_:
 		transitionDefinition = model_core.Nested(transition, t.Definition)
+	case *model_starlark_pb.Transition_UserDefined_AnalysisTest_:
+		analysisTest = model_core.Nested(transition, t.AnalysisTest)
 	default:
 		return nil, nil, errors.New("user-defined transition has an unknown type")
+	}
+
+	if analysisTest.IsSet() {
+		// Transition created through analysis_test_transition().
+		// These don't have an implementation function that needs
+		// to be invoked. Instead, they apply a constant set of
+		// changes to build settings.
+		transitionPackageStr := analysisTest.Message.CanonicalPackage
+		transitionPackage, err := label.NewCanonicalPackage(transitionPackageStr)
+		if err != nil {
+			return nil, nil, fmt.Errorf("invalid canonical package %#v: %w", transitionPackageStr, err)
+		}
+
+		missingDependencies := false
+		expectedOutputs := make([]namedExpectedTransitionOutput[TReference], 0, len(analysisTest.Message.Settings))
+		expectedOutputLabels := make(map[string]string, len(analysisTest.Message.Settings))
+		outputs := make(map[string]starlark.Value, len(analysisTest.Message.Settings))
+		for _, setting := range analysisTest.Message.Settings {
+			apparentBuildSettingLabel, err := getApparentBuildSettingLabel(transitionPackage, setting.Label)
+			if err != nil {
+				return nil, nil, fmt.Errorf("invalid build setting label %#v: %w", setting.Label, err)
+			}
+			expectedOutput, err := getExpectedTransitionOutput[TReference, TMetadata](
+				e,
+				transitionPackage,
+				apparentBuildSettingLabel,
+			)
+			if err != nil {
+				if errors.Is(err, evaluation.ErrMissingDependency) {
+					missingDependencies = true
+					continue
+				}
+				return nil, nil, err
+			}
+			if existing, ok := expectedOutputLabels[expectedOutput.label]; ok {
+				return nil, nil, fmt.Errorf("settings %#v and %#v both refer to build setting %#v", existing, setting.Label, expectedOutput.label)
+			}
+			expectedOutputLabels[expectedOutput.label] = setting.Label
+			expectedOutputs = append(expectedOutputs, namedExpectedTransitionOutput[TReference]{
+				dictKey:        setting.Label,
+				expectedOutput: expectedOutput,
+			})
+
+			v, err := model_starlark.DecodeValue[TReference, TMetadata](
+				model_core.Nested(analysisTest, setting.Value),
+				/* currentIdentifier = */ nil,
+				c.getValueDecodingOptions(ctx, func(resolvedLabel label.ResolvedLabel) (starlark.Value, error) {
+					return model_starlark.NewLabel[TReference, TMetadata](resolvedLabel), nil
+				}),
+			)
+			if err != nil {
+				return nil, nil, fmt.Errorf("failed to decode value for setting %#v: %w", setting.Label, err)
+			}
+			outputs[setting.Label] = v
+		}
+		slices.SortFunc(expectedOutputs, func(a, b namedExpectedTransitionOutput[TReference]) int {
+			return strings.Compare(a.expectedOutput.label, b.expectedOutput.label)
+		})
+
+		if missingDependencies {
+			return nil, nil, evaluation.ErrMissingDependency
+		}
+		return expectedOutputs, map[string]map[string]starlark.Value{"0": outputs}, nil
 	}
 
 	transitionPackageStr := transitionDefinition.Message.CanonicalPackage
