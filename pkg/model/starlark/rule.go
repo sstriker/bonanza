@@ -410,7 +410,7 @@ func (r *rule[TReference, TMetadata]) CallInternal(thread *starlark.Thread, args
 	}
 	patcher.Merge(visibilityPackageGroup.Patcher)
 
-	return starlark.None, targetRegistrar.registerExplicitTarget(
+	if err := targetRegistrar.registerExplicitTarget(
 		name,
 		model_core.NewPatchedMessage(
 			&model_starlark_pb.Target_Definition{
@@ -436,7 +436,36 @@ func (r *rule[TReference, TMetadata]) CallInternal(thread *starlark.Thread, args
 			},
 			patcher,
 		),
-	)
+	); err != nil {
+		return nil, err
+	}
+
+	// Record information on the rule target, so that it can be
+	// reported through native.existing_rule() and
+	// native.existing_rules().
+	existingRule := map[string]starlark.Value{
+		"name": starlark.String(name),
+		"kind": starlark.String(r.Identifier.GetStarlarkIdentifier().String()),
+	}
+	if len(tags) > 0 {
+		tagValues := make([]starlark.Value, 0, len(tags))
+		for _, tag := range tags {
+			tagValues = append(tagValues, starlark.String(tag))
+		}
+		existingRule["tags"] = starlark.NewList(tagValues)
+	}
+	if testOnly {
+		existingRule["testonly"] = starlark.Bool(testOnly)
+	}
+	for i, attrName := range attrNames {
+		if v := values[i]; v != nil {
+			v.Freeze()
+			existingRule[attrName.String()] = v
+		}
+	}
+	targetRegistrar.registerExistingRule(name, existingRule)
+
+	return starlark.None, nil
 }
 
 func (r *rule[TReference, TMetadata]) EncodeValue(path map[starlark.Value]struct{}, currentIdentifier *pg_label.CanonicalStarlarkIdentifier, options *ValueEncodingOptions[TReference, TMetadata]) (model_core.PatchedMessage[*model_starlark_pb.Value, TMetadata], bool, error) {

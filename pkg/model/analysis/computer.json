@@ -47,7 +47,7 @@
             "VisibleTarget"
          ]
       },
-      "BuildSpecification": { },
+      "BuildSpecification": {},
       "BuiltinsModuleNames": {
          "dependsOn": [
             "BuildSpecification"
@@ -407,6 +407,7 @@
             "FileProperties",
             "FileReader",
             "Glob",
+            "PackagesAtAndBelow",
             "RepoDefaultAttrs",
             "RootModule"
          ]

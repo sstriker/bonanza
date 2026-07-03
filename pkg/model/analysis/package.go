@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sort"
 
 	"bonanza.build/pkg/glob"
 	"bonanza.build/pkg/label"
@@ -107,6 +108,40 @@ func (c *baseComputer[TReference, TMetadata]) ComputePackageValue(ctx context.Co
 				return nil, evaluation.ErrMissingDependency
 			}
 			return globValue.Message.MatchedPaths, nil
+		})
+		thread.SetLocal(model_starlark.SubpackagesExpanderKey, func(includePatterns, excludePatterns []string) ([]string, error) {
+			nfa, err := glob.NewNFAFromPatterns(includePatterns, excludePatterns)
+			if err != nil {
+				return nil, err
+			}
+			packagesValue := e.GetPackagesAtAndBelowValue(&model_analysis_pb.PackagesAtAndBelow_Key{
+				BasePackage: canonicalPackage.String(),
+			})
+			if !packagesValue.IsSet() {
+				return nil, evaluation.ErrMissingDependency
+			}
+
+			// PackagesAtAndBelow only reports direct
+			// subpackages, which is exactly the set that
+			// native.subpackages() is expected to match
+			// against.
+			var matchedPaths []string
+			for _, subpackage := range packagesValue.Message.PackagesBelowBasePackage {
+				var matcher glob.Matcher
+				matcher.Initialize(nfa)
+				matches := true
+				for _, r := range subpackage {
+					if !matcher.WriteRune(r) {
+						matches = false
+						break
+					}
+				}
+				if matches && matcher.IsMatch() {
+					matchedPaths = append(matchedPaths, subpackage)
+				}
+			}
+			sort.Strings(matchedPaths)
+			return matchedPaths, nil
 		})
 
 		targetRegistrar := model_starlark.NewTargetRegistrar(
