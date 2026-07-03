@@ -1,4 +1,10 @@
-load(":defs.bzl", "repo_info")
+load("@bazel_skylib//rules:common_settings.bzl", "string_flag")
+load(":defs.bzl", "repo_info", "setting_reader", "verify_native_apis")
+
+string_flag(
+    name = "mode",
+    build_setting_default = "default",
+)
 
 repo_info(
     name = "repo_info",
@@ -11,6 +17,16 @@ genrule(
     cmd = "echo 'Hello from patched bonanza' > $@",
 )
 
+# setting_reader's "setting" attribute carries an
+# analysis_test_transition() that overrides //:mode, so the output
+# must contain the transitioned value instead of the default.
+setting_reader(
+    name = "transitioned_mode",
+    setting = ":mode",
+)
+
+verify_native_apis()
+
 # Verifies, on the worker, that the artifacts produced by the targets
 # above have the expected contents. If any assertion fails, the build
 # fails.
@@ -19,6 +35,7 @@ genrule(
     srcs = [
         ":hello",
         ":repo_info",
+        ":transitioned_mode",
     ],
     outs = ["verify.txt"],
     cmd = "grep -q 'Hello from patched bonanza' $(location :hello) && " +
@@ -28,8 +45,10 @@ genrule(
           "grep -q 'repository_name=\"@testproject+\"' $(location :repo_info) && " +
           "grep -q 'package=\"\"' $(location :repo_info) && " +
           "grep -q 'workspace_name=\"testproject+\"' $(location :repo_info) && " +
+          "grep -q 'subpackages=\\[\"platforms\"\\]' $(location :repo_info) && " +
           "grep -q 'sum(\\[4, 5, 6\\]) = 15' $(location :repo_info) && " +
-          "cat $(location :hello) $(location :repo_info) > $@",
+          "grep -q 'mode=transitioned' $(location :transitioned_mode) && " +
+          "cat $(location :hello) $(location :repo_info) $(location :transitioned_mode) > $@",
 )
 
 filegroup(
@@ -37,6 +56,7 @@ filegroup(
     srcs = [
         ":hello",
         ":repo_info",
+        ":transitioned_mode",
         ":verify",
     ],
 )
