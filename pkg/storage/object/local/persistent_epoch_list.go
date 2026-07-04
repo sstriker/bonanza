@@ -128,7 +128,7 @@ func (el *PersistentEpochList) reinitialize() {
 // that have either been overwritten or discarded.
 func (el *PersistentEpochList) pruneStaleEpochs() {
 	epochsToPrune := 0
-	for len(el.epochs) > 0 && el.epochs[epochsToPrune].maximumLocation <= el.minimumLocation {
+	for epochsToPrune < len(el.epochs) && el.epochs[epochsToPrune].maximumLocation <= el.minimumLocation {
 		epochsToPrune++
 	}
 
@@ -189,6 +189,20 @@ func (el *PersistentEpochList) FinalizeWriteUpToLocation(location uint64) error 
 		}
 		el.pruneStaleEpochs()
 		el.locationsChangedWakeup.unblock()
+	} else if len(el.epochs) == el.synchronizingEpochs {
+		// The write does not progress the maximum location, but
+		// no current epoch exists. This can happen if all
+		// epochs were discarded while the write was in
+		// progress, e.g. because DiscardUpToLocation() was
+		// called after a corrupted object was detected. Create
+		// a new epoch, so that GetCurrentEpochState() can be
+		// used to write reference-location map entries. Any
+		// entries referring to locations covered by the
+		// discarded epochs are suppressed during lookups.
+		el.epochs = append(el.epochs, persistentEpochInfo{
+			hashSeed:        el.randomNumberGenerator.Uint64(),
+			maximumLocation: maximumLocation,
+		})
 	}
 	return nil
 }
