@@ -83,6 +83,16 @@ message ApplicationConfiguration {
   //
   // Recommended value: 900s
   google.protobuf.Duration platform_queue_with_no_workers_timeout = 9;
+
+  // Workers are removed if they have not synchronized against the
+  // scheduler during this time period. If a removed worker was
+  // executing a task, the task is failed. On heavily loaded systems it
+  // may be desirable to increase this value, so that tasks are not
+  // failed prematurely when workers are slow to synchronize due to
+  // resource contention.
+  //
+  // Recommended value: 60s
+  google.protobuf.Duration worker_with_no_synchronizations_timeout = 10;
 }
 
 message PredeclaredPlatformQueueConfiguration {
