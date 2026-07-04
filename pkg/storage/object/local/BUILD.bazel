@@ -55,6 +55,7 @@ go_test(
         "mocks_local_test.go",
         "mocks_util_test.go",
         "periodic_syncer_test.go",
+        "persistent_epoch_list_test.go",
         "store_test.go",
     ],
     embed = [":local"],
