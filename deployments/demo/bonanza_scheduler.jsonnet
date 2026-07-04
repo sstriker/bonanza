@@ -22,6 +22,11 @@ local statePath = std.extVar('STATE_PATH');
     listenPaths: [statePath + '/bonanza_scheduler_buildqueuestate.sock'],
     authenticationPolicy: { allow: {} },
   }],
+  // Give workers ample time to synchronize, so that tasks are not
+  // failed prematurely when the machine running this demo deployment is
+  // heavily loaded.
+  workerWithNoSynchronizationsTimeout: '300s',
+
   actionRouter: {
     simple: {
       initialSizeClassAnalyzer: {
