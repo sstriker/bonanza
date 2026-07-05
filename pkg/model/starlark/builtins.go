@@ -1675,6 +1675,7 @@ func GetBuiltins[TReference object.BasicReference, TMetadata model_core.Referenc
 				outputs := map[pg_label.StarlarkIdentifier]string{}
 				var provides []*Provider[TReference, TMetadata]
 				var subrules []*Subrule[TReference, TMetadata]
+				analysisTest := false
 				test := false
 				var toolchains []*ToolchainType[TReference, TMetadata]
 				skylarkTestable := false
@@ -1683,6 +1684,7 @@ func GetBuiltins[TReference object.BasicReference, TMetadata model_core.Referenc
 					// Positional arguments.
 					"implementation", unpack.Bind(thread, &implementation, namedFunctionUnpackerInto),
 					// Keyword arguments.
+					"analysis_test?", unpack.Bind(thread, &analysisTest, unpack.Bool),
 					"attrs?", unpack.Bind(thread, &attrs, unpack.Dict(unpack.StarlarkIdentifier, unpack.Type[*Attr[TReference, TMetadata]]("attr.*"))),
 					"build_setting?", unpack.Bind(thread, &buildSetting, unpack.IfNotNone(unpack.Type[*BuildSetting]("config.*"))),
 					"cfg?", unpack.Bind(thread, &cfg, transitionDefinitionUnpackerInto),
@@ -1701,6 +1703,16 @@ func GetBuiltins[TReference object.BasicReference, TMetadata model_core.Referenc
 					"_skylark_testable?", unpack.Bind(thread, &skylarkTestable, unpack.Bool),
 				); err != nil {
 					return nil, err
+				}
+
+				// Analysis test rules are test rules whose
+				// implementation runs entirely during the
+				// analysis phase. Bazel additionally restricts
+				// what such rules may do (e.g. the number of
+				// transitive dependencies); we accept them
+				// without imposing those restrictions.
+				if analysisTest {
+					test = true
 				}
 
 				needsConfiguration := needs == nil
