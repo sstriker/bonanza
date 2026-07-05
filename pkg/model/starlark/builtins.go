@@ -1754,6 +1754,16 @@ func GetBuiltins[TReference object.BasicReference, TMetadata model_core.Referenc
 						return nil, errors.New("cannot explicitly declare exec_group with name \"\"")
 					}
 					execGroups[""] = NewExecGroup(execCompatibleWith, toolchains)
+
+					// Test rules implicitly have a "test"
+					// exec group in which the test action
+					// runs, inheriting the constraints of
+					// the default exec group.
+					if test {
+						if _, ok := execGroups["test"]; !ok {
+							execGroups["test"] = NewExecGroup(execCompatibleWith, toolchains)
+						}
+					}
 				} else if len(execCompatibleWith) > 0 || len(toolchains) > 0 {
 					return nil, fmt.Errorf("default_exec_group=False is incompatible with the exec_compatible_with and toolchains options")
 				}
