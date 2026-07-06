@@ -862,14 +862,21 @@ func (r *changeTrackingDirectoryNewFileResolver[TReference, TMetadata]) OnUp() (
 }
 
 func inferArchiveFormatFromURL(url string) (model_analysis_pb.HttpArchiveContents_Key_Format, bool) {
-	if strings.HasSuffix(url, ".tar.gz") {
-		return model_analysis_pb.HttpArchiveContents_Key_TAR_GZ, true
+	for _, suffix := range []string{".tar.gz", ".tgz", ".taz"} {
+		if strings.HasSuffix(url, suffix) {
+			return model_analysis_pb.HttpArchiveContents_Key_TAR_GZ, true
+		}
 	}
-	if strings.HasSuffix(url, ".tar.xz") {
-		return model_analysis_pb.HttpArchiveContents_Key_TAR_XZ, true
+	for _, suffix := range []string{".tar.xz", ".txz"} {
+		if strings.HasSuffix(url, suffix) {
+			return model_analysis_pb.HttpArchiveContents_Key_TAR_XZ, true
+		}
 	}
-	if strings.HasSuffix(url, ".zip") {
-		return model_analysis_pb.HttpArchiveContents_Key_ZIP, true
+	// Bazel treats these ZIP based formats interchangeably.
+	for _, suffix := range []string{".zip", ".jar", ".war", ".aar", ".whl", ".nupkg"} {
+		if strings.HasSuffix(url, suffix) {
+			return model_analysis_pb.HttpArchiveContents_Key_ZIP, true
+		}
 	}
 	return 0, false
 }
