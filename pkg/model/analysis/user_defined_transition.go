@@ -40,6 +40,23 @@ type expectedTransitionOutput[TReference any] struct {
 	isFlag        bool
 }
 
+// flagValueParsingCanonicalizer wraps the canonicalizer of a native
+// command line option, additionally accepting string values. Bazel
+// parses string values assigned to native options in transitions the
+// same way it parses command line flags, which e.g. bazel_skylib's
+// analysistest relies on by assigning "0" to //command_line_option:stamp.
+type flagValueParsingCanonicalizer struct {
+	model_starlark.BuildSettingCanonicalizer
+	labelResolver label.Resolver
+}
+
+func (c *flagValueParsingCanonicalizer) Canonicalize(thread *starlark.Thread, v starlark.Value) (starlark.Value, error) {
+	if s, ok := starlark.AsString(v); ok {
+		return c.CanonicalizeStringList([]string{s}, c.labelResolver)
+	}
+	return c.BuildSettingCanonicalizer.Canonicalize(thread, v)
+}
+
 type getExpectedTransitionOutputEnvironment[TReference any, TMetadata model_core.ReferenceMetadata] interface {
 	labelResolverEnvironment[TReference]
 
@@ -140,9 +157,16 @@ func getExpectedTransitionOutput[TReference object.BasicReference, TMetadata mod
 		if err != nil {
 			return expectedTransitionOutput[TReference]{}, fmt.Errorf("failed to decode build setting type for rule %#v used by build setting %#v: %w", targetKind.RuleTarget.RuleIdentifier, visibleBuildSettingLabel, err)
 		}
+		canonicalizer := buildSettingType.GetCanonicalizer(transitionPackage)
+		if strings.HasPrefix(visibleBuildSettingLabel, "@@bazel_tools+//command_line_option:") {
+			canonicalizer = &flagValueParsingCanonicalizer{
+				BuildSettingCanonicalizer: canonicalizer,
+				labelResolver:             newLabelResolver(e),
+			}
+		}
 		return expectedTransitionOutput[TReference]{
 			label:         visibleBuildSettingLabel,
-			canonicalizer: buildSettingType.GetCanonicalizer(transitionPackage),
+			canonicalizer: canonicalizer,
 			defaultValue:  model_core.Nested(targetValue, targetKind.RuleTarget.BuildSettingDefault),
 			isFlag:        buildSetting.Flag,
 		}, nil
