@@ -570,12 +570,18 @@ starlark_doc_extract = rule(
 )
 
 def _test_suite_impl(ctx):
-    fail("TODO: implement")
+    # Building a test_suite builds the tests it references. Running
+    # them and expanding an empty "tests" attribute to all tests in the
+    # package are left unimplemented.
+    return [DefaultInfo(files = depset(transitive = [
+        t[DefaultInfo].files
+        for t in ctx.attr.tests
+    ]))]
 
 test_suite = rule(
     _test_suite_impl,
     attrs = {
-        "tests": attr.string_list(),
+        "tests": attr.label_list(),
     },
     needs = [],
 )
