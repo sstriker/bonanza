@@ -706,7 +706,31 @@ func (r *changeTrackingDirectoryExistingFileResolver[TReference, TMetadata]) OnD
 			IsReversible: true,
 		}, nil
 	}
+	if target, ok := d.symlinks[name]; ok {
+		return path.GotSymlink{
+			Parent: path.NewRelativeScopeWalker(r),
+			Target: target,
+		}, nil
+	}
 	return nil, errDirectoryDoesNotExist
+}
+
+// OnTerminal follows symbolic links, so that operations like
+// repository_ctx.read() transparently work on paths containing
+// symbolic links created through repository_ctx.symlink().
+func (r *changeTrackingDirectoryExistingFileResolver[TReference, TMetadata]) OnTerminal(name path.Component) (*path.GotSymlink, error) {
+	d := r.stack.Peek()
+	if err := d.maybeLoadContents(r.loadOptions); err != nil {
+		return nil, err
+	}
+	if target, ok := d.symlinks[name]; ok {
+		return &path.GotSymlink{
+			Parent: path.NewRelativeScopeWalker(r),
+			Target: target,
+		}, nil
+	}
+	r.TerminalName = &name
+	return nil, nil
 }
 
 func (r *changeTrackingDirectoryExistingFileResolver[TReference, TMetadata]) OnUp() (path.ComponentWalker, error) {
