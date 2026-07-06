@@ -142,7 +142,9 @@ def _wrap_rule_ctx(ctx):
             _expand_make_variables(command, lambda variable_name: make_variables[variable_name]),
         ], []
 
-    def ctx_runfiles(files = [], transitive_files = None, collect_data = False, collect_default = False, symlinks = {}, root_symlinks = {}):
+    def ctx_runfiles(files = [], transitive_files = None, collect_data = False, collect_default = False, symlinks = {}, root_symlinks = {}, skip_conflict_checking = False):
+        # skip_conflict_checking is merely a performance hint; runfiles
+        # conflict checking is not performed here to begin with.
         direct = runfiles(
             files = depset(direct = files, transitive = [transitive_files] if transitive_files else []),
             symlinks = _to_symlink_entry_depset(symlinks),
