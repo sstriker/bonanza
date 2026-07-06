@@ -144,13 +144,24 @@ func getDefaultInheritableAttrs[TReference object.BasicReference, TMetadata mode
 		)
 	}
 
+	var visibilityLabels []string
+	if len(visibility) > 0 {
+		visibilityLabels = make([]string, 0, len(visibility))
+		for _, l := range visibility {
+			visibilityLabels = append(visibilityLabels, l.String())
+		}
+	} else {
+		visibilityLabels = previousInheritableAttrs.Message.VisibilityLabels
+	}
+
 	// TODO: Also store features?
 	return model_core.NewPatchedMessage(
 		&model_starlark_pb.InheritableAttrs{
-			Deprecation:     deprecation,
-			PackageMetadata: packageMetadata,
-			Testonly:        testOnly,
-			Visibility:      visibilityPackageGroup.Message,
+			Deprecation:      deprecation,
+			PackageMetadata:  packageMetadata,
+			Testonly:         testOnly,
+			Visibility:       visibilityPackageGroup.Message,
+			VisibilityLabels: visibilityLabels,
 		},
 		visibilityPackageGroup.Patcher,
 	), nil

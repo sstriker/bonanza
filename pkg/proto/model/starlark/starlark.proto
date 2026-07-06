@@ -428,6 +428,15 @@ message InheritableAttrs {
   // Which targets in other packages are permitted to depend on this
   // target.
   PackageGroup visibility = 4;
+
+  // The labels that were provided to the target's "visibility"
+  // attribute or to package(default_visibility = ...), in canonical
+  // form, preserving the original order. The package group stored in
+  // the "visibility" field is derived from these labels. This field
+  // is used to expose the original labels through ctx.attr.visibility.
+  // If empty, the visibility should be presented as
+  // ["//visibility:private"].
+  repeated string visibility_labels = 5;
 }
 
 message Int {
@@ -793,6 +802,12 @@ message RuleTarget {
   // synthesized at loading time, such as the ones created by calls to
   // testing.analysis_test().
   Rule.Definition rule_definition = 8;
+
+  // Values of the "features" common attribute, in the form of a
+  // sequence of select() expressions whose values need to be
+  // concatenated. Uses the same representation as
+  // target_compatible_with above.
+  repeated Select.Group features = 9;
 }
 
 message Select {

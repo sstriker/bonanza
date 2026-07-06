@@ -168,6 +168,9 @@ func TestParseModuleDotBazel(t *testing.T) {
 					},
 				},
 			},
+			VisibilityLabels: []string{
+				"@@foo+//somepackage:__pkg__",
+			},
 		}, defaultAttrs.Message)
 	})
 }

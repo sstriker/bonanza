@@ -414,6 +414,23 @@ func (r *rule[TReference, TMetadata]) CallInternal(thread *starlark.Thread, args
 	}
 	patcher.Merge(targetCompatibleWithGroups.Patcher)
 
+	if features == nil {
+		features = NewSelect[TReference, TMetadata](
+			[]SelectGroup{
+				NewSelectGroup(nil, starlark.NewList(nil), ""),
+			},
+			/* concatenationOperator = */ 0,
+		)
+	}
+	featureGroups, _, err := features.EncodeGroups(
+		/* path = */ map[starlark.Value]struct{}{},
+		valueEncodingOptions,
+	)
+	if err != nil {
+		return nil, err
+	}
+	patcher.Merge(featureGroups.Patcher)
+
 	sort.Strings(execCompatibleWith)
 	sort.Strings(tags)
 
@@ -423,6 +440,16 @@ func (r *rule[TReference, TMetadata]) CallInternal(thread *starlark.Thread, args
 	}
 	patcher.Merge(visibilityPackageGroup.Patcher)
 
+	var visibilityLabels []string
+	if len(visibility) > 0 {
+		visibilityLabels = make([]string, 0, len(visibility))
+		for _, l := range visibility {
+			visibilityLabels = append(visibilityLabels, l.String())
+		}
+	} else {
+		visibilityLabels = defaultInheritableAttrs.VisibilityLabels
+	}
+
 	ruleTarget := &model_starlark_pb.RuleTarget{
 		PublicAttrValues: publicAttrValues,
 		// TODO: Also set CompatibleWith. How is
@@ -431,11 +458,13 @@ func (r *rule[TReference, TMetadata]) CallInternal(thread *starlark.Thread, args
 		ExecCompatibleWith:   execCompatibleWith,
 		Tags:                 slices.Compact(tags),
 		TargetCompatibleWith: targetCompatibleWithGroups.Message,
+		Features:             featureGroups.Message,
 		InheritableAttrs: &model_starlark_pb.InheritableAttrs{
-			Deprecation:     deprecation,
-			PackageMetadata: packageMetadata,
-			Testonly:        testOnly,
-			Visibility:      visibilityPackageGroup.Message,
+			Deprecation:      deprecation,
+			PackageMetadata:  packageMetadata,
+			Testonly:         testOnly,
+			Visibility:       visibilityPackageGroup.Message,
+			VisibilityLabels: visibilityLabels,
 		},
 		BuildSettingDefault: encodedBuildSettingDefault.Message,
 	}
