@@ -671,10 +671,17 @@ type changeTrackingDirectoryExistingFileResolver[TReference object.BasicReferenc
 	loadOptions *changeTrackingDirectoryLoadOptions[TReference]
 	stack       util.NonEmptyStack[*changeTrackingDirectory[TReference, TMetadata]]
 	gotScope    bool
+
+	// The components of the fully resolved path, relative to the
+	// directory at the bottom of the stack. As symbolic links are
+	// expanded during resolution, these may differ from the
+	// components of the path that was provided.
+	components []path.Component
 }
 
 func (r *changeTrackingDirectoryExistingFileResolver[TReference, TMetadata]) OnAbsolute() (path.ComponentWalker, error) {
 	r.stack.PopAll()
+	r.components = r.components[:0]
 	r.gotScope = true
 	return r, nil
 }
@@ -701,6 +708,7 @@ func (r *changeTrackingDirectoryExistingFileResolver[TReference, TMetadata]) OnD
 	}
 	if dChild, ok := d.directories[name]; ok {
 		r.stack.Push(dChild)
+		r.components = append(r.components, name)
 		return path.GotDirectory{
 			Child:        r,
 			IsReversible: true,
@@ -742,6 +750,7 @@ func (r *changeTrackingDirectoryExistingFileResolver[TReference, TMetadata]) OnU
 	if _, ok := r.stack.PopSingle(); !ok {
 		return nil, errors.New("path resolves to a location above the root directory")
 	}
+	r.components = r.components[:len(r.components)-1]
 	return r, nil
 }
 
@@ -1374,6 +1383,7 @@ type moduleOrRepositoryContext[TReference object.BasicReference, TMetadata model
 	fileReader                         *model_filesystem.FileReader[TReference]
 	pathUnpackerInto                   unpack.UnpackerInto[*model_starlark.BarePath]
 	repoPlatform                       model_core.Message[*model_analysis_pb.RegisteredRepoPlatform_Value, TReference]
+	stableInputRootPath                *model_starlark.BarePath
 	virtualRootScopeWalkerFactory      *path.VirtualRootScopeWalkerFactory
 
 	inputRootDirectory *changeTrackingDirectory[TReference, TMetadata]
@@ -1508,6 +1518,7 @@ func (mrc *moduleOrRepositoryContext[TReference, TMetadata]) maybeGetStableInput
 		}
 
 		mrc.defaultWorkingDirectoryPath = defaultWorkingDirectoryPath
+		mrc.stableInputRootPath = stableInputRootPath
 
 		externalPath := stableInputRootPath.Append(model_starlark.ComponentExternal)
 		mrc.externalPath = externalPath
@@ -3247,11 +3258,19 @@ func (mrc *moduleOrRepositoryContext[TReference, TMetadata]) Realpath(p *model_s
 			return nil, fmt.Errorf("cannot resolve %#v: %w", p.GetUNIXString(), err)
 		}
 	} else if r.gotScope {
-		// Path lies within the input root. Any symbolic links
-		// leading up to the path have already been expanded by
-		// the resolver above, so the provided path can be
-		// returned as is.
-		return p, nil
+		// Path lies within the input root. The resolver above
+		// has expanded any symbolic links it encountered, so the
+		// canonical path can be reconstructed by appending the
+		// components of the fully resolved path to the stable
+		// input root path.
+		resolvedPath := mrc.stableInputRootPath
+		for _, component := range r.components {
+			resolvedPath = resolvedPath.Append(component)
+		}
+		if r.TerminalName != nil {
+			resolvedPath = resolvedPath.Append(*r.TerminalName)
+		}
+		return resolvedPath, nil
 	}
 
 	// Path resolves to a location that is not part of the input
