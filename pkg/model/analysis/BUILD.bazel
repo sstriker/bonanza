@@ -23,6 +23,7 @@ go_library(
         "compatible_toolchains_for_type.go",
         "compiled_bzl_file.go",
         "computer.go",
+        "configured_aspect.go",
         "configured_target.go",
         "directory_creation_parameters.go",
         "directory_readers.go",
