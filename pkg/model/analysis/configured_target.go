@@ -32,6 +32,8 @@ import (
 
 	"golang.org/x/sync/errgroup"
 	"golang.org/x/sync/semaphore"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/wrapperspb"
 
@@ -46,6 +48,22 @@ var (
 	toolchainInfoProviderIdentifier            = util.Must(label.NewCanonicalStarlarkIdentifier("@@builtins_core+//:exports.bzl%ToolchainInfo"))
 	filesToRunProviderIdentifier               = util.Must(label.NewCanonicalStarlarkIdentifier("@@builtins_core+//:exports.bzl%FilesToRunProvider"))
 )
+
+// isInfrastructureError returns true for errors that are not a pure
+// function of the evaluation key (cancellation, storage unavailability,
+// missing objects), and must therefore never be demoted to cacheable
+// analysis failure values.
+func isInfrastructureError(err error) bool {
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return true
+	}
+	switch status.Code(err) {
+	case codes.Canceled, codes.DeadlineExceeded, codes.NotFound, codes.FailedPrecondition, codes.Internal, codes.Unavailable:
+		return true
+	default:
+		return false
+	}
+}
 
 // constraintValuesToConstraints converts a list of labels of constraint
 // values to a list of Constraint messages that include both the
@@ -1604,7 +1622,7 @@ func (c *baseComputer[TReference, TMetadata]) ComputeConfiguredTargetValue(ctx c
 			// unavailability) must never be demoted to analysis
 			// failures, as the resulting cached value would not
 			// be a pure function of the evaluation key.
-			if ctx.Err() != nil || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			if ctx.Err() != nil || isInfrastructureError(err) {
 				return PatchedConfiguredTargetValue[TMetadata]{}, err
 			}
 			var evalErr *starlark.EvalError
@@ -1628,7 +1646,7 @@ func (c *baseComputer[TReference, TMetadata]) ComputeConfiguredTargetValue(ctx c
 			}),
 		).UnpackInto(thread, returnValue, &providerInstances); err != nil {
 			err = fmt.Errorf("failed to unpack implementation function return value: %w", err)
-			if allowAnalysisFailures && !errors.Is(err, evaluation.ErrMissingDependency) && ctx.Err() == nil {
+			if allowAnalysisFailures && !errors.Is(err, evaluation.ErrMissingDependency) && ctx.Err() == nil && !isInfrastructureError(err) {
 				return c.computeAnalysisFailureConfiguredTargetValue(ctx, e, key, targetLabel, emptyDefaultInfo, err.Error(), failedDepProviders)
 			}
 			return PatchedConfiguredTargetValue[TMetadata]{}, err
