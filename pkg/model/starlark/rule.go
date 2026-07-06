@@ -21,6 +21,7 @@ import (
 type rule[TReference object.BasicReference, TMetadata model_core.ReferenceMetadata] struct {
 	LateNamedValue
 	definition RuleDefinition[TReference, TMetadata]
+	anonymous  bool
 }
 
 var (
@@ -37,6 +38,18 @@ func NewRule[TReference object.BasicReference, TMetadata model_core.ReferenceMet
 			Identifier: identifier,
 		},
 		definition: definition,
+	}
+}
+
+// NewAnonymousRule creates a Starlark rule object that is not assigned
+// to any global in a .bzl file. Targets that instantiate such a rule
+// embed its definition instead of referring to it by identifier. This
+// is used by testing.analysis_test() to synthesize test rules at
+// loading time.
+func NewAnonymousRule[TReference object.BasicReference, TMetadata model_core.ReferenceMetadata](definition RuleDefinition[TReference, TMetadata]) starlark.Value {
+	return &rule[TReference, TMetadata]{
+		definition: definition,
+		anonymous:  true,
 	}
 }
 
@@ -76,7 +89,7 @@ func (r *rule[TReference, TMetadata]) CallInternal(thread *starlark.Thread, args
 		return nil, fmt.Errorf("got %d positional arguments, want 1", len(args))
 	}
 
-	if r.Identifier == nil {
+	if r.Identifier == nil && !r.anonymous {
 		return nil, errors.New("rule does not have a name")
 	}
 	targetRegistrarValue := thread.Local(TargetRegistrarKey)
@@ -225,7 +238,7 @@ func (r *rule[TReference, TMetadata]) CallInternal(thread *starlark.Thread, args
 	}
 
 	if err := starlark.UnpackArgs(
-		r.Identifier.GetStarlarkIdentifier().String(), nil, kwargs,
+		r.Name(), nil, kwargs,
 		append(mandatoryUnpackers, optionalUnpackers...)...,
 	); err != nil {
 		return nil, err
@@ -410,28 +423,44 @@ func (r *rule[TReference, TMetadata]) CallInternal(thread *starlark.Thread, args
 	}
 	patcher.Merge(visibilityPackageGroup.Patcher)
 
+	ruleTarget := &model_starlark_pb.RuleTarget{
+		PublicAttrValues: publicAttrValues,
+		// TODO: Also set CompatibleWith. How is
+		// it different from ExecCompatibleWith
+		// and TargetWith?
+		ExecCompatibleWith:   execCompatibleWith,
+		Tags:                 slices.Compact(tags),
+		TargetCompatibleWith: targetCompatibleWithGroups.Message,
+		InheritableAttrs: &model_starlark_pb.InheritableAttrs{
+			Deprecation:     deprecation,
+			PackageMetadata: packageMetadata,
+			Testonly:        testOnly,
+			Visibility:      visibilityPackageGroup.Message,
+		},
+		BuildSettingDefault: encodedBuildSettingDefault.Message,
+	}
+	if r.Identifier == nil {
+		// Anonymous rule. Embed its definition into the target,
+		// as there is no global in a .bzl file to refer to.
+		definition, needsCode, err := r.definition.Encode(map[starlark.Value]struct{}{}, valueEncodingOptions)
+		if err != nil {
+			return nil, err
+		}
+		if needsCode {
+			return nil, errors.New("implementation function of an anonymous rule must be declared in a .bzl file")
+		}
+		ruleTarget.RuleDefinition = definition.Message
+		patcher.Merge(definition.Patcher)
+	} else {
+		ruleTarget.RuleIdentifier = r.Identifier.String()
+	}
+
 	if err := targetRegistrar.registerExplicitTarget(
 		name,
 		model_core.NewPatchedMessage(
 			&model_starlark_pb.Target_Definition{
 				Kind: &model_starlark_pb.Target_Definition_RuleTarget{
-					RuleTarget: &model_starlark_pb.RuleTarget{
-						RuleIdentifier:   r.Identifier.String(),
-						PublicAttrValues: publicAttrValues,
-						// TODO: Also set CompatibleWith. How is
-						// it different from ExecCompatibleWith
-						// and TargetWith?
-						ExecCompatibleWith:   execCompatibleWith,
-						Tags:                 slices.Compact(tags),
-						TargetCompatibleWith: targetCompatibleWithGroups.Message,
-						InheritableAttrs: &model_starlark_pb.InheritableAttrs{
-							Deprecation:     deprecation,
-							PackageMetadata: packageMetadata,
-							Testonly:        testOnly,
-							Visibility:      visibilityPackageGroup.Message,
-						},
-						BuildSettingDefault: encodedBuildSettingDefault.Message,
-					},
+					RuleTarget: ruleTarget,
 				},
 			},
 			patcher,
@@ -442,10 +471,16 @@ func (r *rule[TReference, TMetadata]) CallInternal(thread *starlark.Thread, args
 
 	// Record information on the rule target, so that it can be
 	// reported through native.existing_rule() and
-	// native.existing_rules().
+	// native.existing_rules(). Anonymous rules currently only
+	// originate from testing.analysis_test(), which is the rule
+	// class name Bazel reports for such targets.
+	kind := "analysis_test"
+	if r.Identifier != nil {
+		kind = r.Identifier.GetStarlarkIdentifier().String()
+	}
 	existingRule := map[string]starlark.Value{
 		"name": starlark.String(name),
-		"kind": starlark.String(r.Identifier.GetStarlarkIdentifier().String()),
+		"kind": starlark.String(kind),
 	}
 	if len(tags) > 0 {
 		tagValues := make([]starlark.Value, 0, len(tags))
