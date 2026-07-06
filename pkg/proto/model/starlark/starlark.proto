@@ -57,7 +57,16 @@ message Alias {
 }
 
 message Aspect {
-  message Definition {}
+  message Definition {
+    // Names of rule attributes along which this aspect is propagated
+    // to dependencies of the targets to which it is applied (e.g.
+    // "deps"), or the string "*" to propagate along all attributes.
+    repeated string attr_aspects = 1;
+
+    // Starlark function that implements this aspect. It is invoked
+    // with two positional arguments: (target, ctx).
+    Function implementation = 2;
+  }
 
   oneof kind {
     string reference = 1;
