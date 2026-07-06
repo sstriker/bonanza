@@ -17,6 +17,8 @@ import (
 	"bonanza.build/pkg/starlark/unpack"
 	"bonanza.build/pkg/storage/object"
 
+	"github.com/buildbarn/bb-storage/pkg/util"
+
 	"google.golang.org/protobuf/proto"
 
 	"go.starlark.net/starlark"
@@ -146,17 +148,10 @@ func (c *baseComputer[TReference, TMetadata]) ComputeConfiguredAspectValue(ctx c
 		return model_core.NewSimplePatchedMessage[TMetadata](&model_analysis_pb.ConfiguredAspect_Value{}), nil
 	}
 	ruleTarget := targetKind.RuleTarget
-	ruleIdentifier, err := label.NewCanonicalStarlarkIdentifier(ruleTarget.RuleIdentifier)
-	if err != nil {
-		return PatchedConfiguredAspectValue[TMetadata]{}, err
-	}
 
 	allBuiltinsModulesNames := e.GetBuiltinsModuleNamesValue(&model_analysis_pb.BuiltinsModuleNames_Key{})
 	aspectValue := e.GetCompiledBzlFileGlobalValue(&model_analysis_pb.CompiledBzlFileGlobal_Key{
 		Identifier: aspectIdentifier.String(),
-	})
-	ruleValue := e.GetCompiledBzlFileGlobalValue(&model_analysis_pb.CompiledBzlFileGlobal_Key{
-		Identifier: ruleIdentifier.String(),
 	})
 	patchedConfigurationReference := model_core.Patch(e, configurationReference)
 	targetProviders := e.GetTargetProvidersValue(
@@ -168,11 +163,53 @@ func (c *baseComputer[TReference, TMetadata]) ComputeConfiguredAspectValue(ctx c
 			patchedConfigurationReference.Patcher,
 		),
 	)
-	if !allBuiltinsModulesNames.IsSet() ||
-		!aspectValue.IsSet() ||
-		!ruleValue.IsSet() ||
-		!targetProviders.IsSet() {
-		return PatchedConfiguredAspectValue[TMetadata]{}, evaluation.ErrMissingDependency
+	gotCommonDependencies := allBuiltinsModulesNames.IsSet() &&
+		aspectValue.IsSet() &&
+		targetProviders.IsSet()
+
+	var ruleIdentifier label.CanonicalStarlarkIdentifier
+	var ruleDefinition model_core.Message[*model_starlark_pb.Rule_Definition, TReference]
+	if ruleTarget.RuleIdentifier != "" {
+		var err error
+		ruleIdentifier, err = label.NewCanonicalStarlarkIdentifier(ruleTarget.RuleIdentifier)
+		if err != nil {
+			return PatchedConfiguredAspectValue[TMetadata]{}, err
+		}
+
+		ruleValue := e.GetCompiledBzlFileGlobalValue(&model_analysis_pb.CompiledBzlFileGlobal_Key{
+			Identifier: ruleIdentifier.String(),
+		})
+		if !gotCommonDependencies || !ruleValue.IsSet() {
+			return PatchedConfiguredAspectValue[TMetadata]{}, evaluation.ErrMissingDependency
+		}
+		rv, ok := ruleValue.Message.Global.GetKind().(*model_starlark_pb.Value_Rule)
+		if !ok {
+			return PatchedConfiguredAspectValue[TMetadata]{}, fmt.Errorf("%#v is not a rule", ruleIdentifier.String())
+		}
+		rd, ok := rv.Rule.Kind.(*model_starlark_pb.Rule_Definition_)
+		if !ok {
+			return PatchedConfiguredAspectValue[TMetadata]{}, fmt.Errorf("%#v is not a rule definition", ruleIdentifier.String())
+		}
+		ruleDefinition = model_core.Nested(ruleValue, rd.Definition)
+	} else if ruleTarget.RuleDefinition != nil {
+		// Anonymous rule of which the definition is embedded
+		// into the target, as created by
+		// testing.analysis_test(). Synthesize an identifier
+		// based on the file declaring the implementation
+		// function, as it is only used for error messages and
+		// to determine the package relative to which default
+		// attr values are resolved.
+		if !gotCommonDependencies {
+			return PatchedConfiguredAspectValue[TMetadata]{}, evaluation.ErrMissingDependency
+		}
+		implementationFilename, err := label.NewCanonicalLabel(ruleTarget.RuleDefinition.GetImplementation().GetFilename())
+		if err != nil {
+			return PatchedConfiguredAspectValue[TMetadata]{}, fmt.Errorf("invalid rule implementation function filename: %w", err)
+		}
+		ruleIdentifier = implementationFilename.AppendStarlarkIdentifier(util.Must(label.NewStarlarkIdentifier("analysis_test")))
+		ruleDefinition = model_core.Nested(targetValue, ruleTarget.RuleDefinition)
+	} else {
+		return PatchedConfiguredAspectValue[TMetadata]{}, errors.New("rule target has neither a rule identifier, nor an inline rule definition")
 	}
 
 	av, ok := aspectValue.Message.Global.GetKind().(*model_starlark_pb.Value_Aspect)
@@ -184,16 +221,6 @@ func (c *baseComputer[TReference, TMetadata]) ComputeConfiguredAspectValue(ctx c
 		return PatchedConfiguredAspectValue[TMetadata]{}, fmt.Errorf("%#v is not an aspect definition", aspectIdentifier.String())
 	}
 	aspectDefinition := model_core.Nested(aspectValue, ad.Definition)
-
-	rv, ok := ruleValue.Message.Global.GetKind().(*model_starlark_pb.Value_Rule)
-	if !ok {
-		return PatchedConfiguredAspectValue[TMetadata]{}, fmt.Errorf("%#v is not a rule", ruleIdentifier.String())
-	}
-	rd, ok := rv.Rule.Kind.(*model_starlark_pb.Rule_Definition_)
-	if !ok {
-		return PatchedConfiguredAspectValue[TMetadata]{}, fmt.Errorf("%#v is not a rule definition", ruleIdentifier.String())
-	}
-	ruleDefinition := model_core.Nested(ruleValue, rd.Definition)
 
 	thread := c.newStarlarkThread(ctx, e, allBuiltinsModulesNames.Message.BuiltinsModuleNames)
 	identifierGenerator, err := c.getReferenceEqualIdentifierGenerator(model_core.Nested(key, proto.Message(key.Message)))
