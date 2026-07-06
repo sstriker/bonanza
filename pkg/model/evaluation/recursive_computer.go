@@ -1446,8 +1446,9 @@ func (computingValueState[TReference, TMetadata]) disableCacheLookup() valueStat
 
 func (vs *computingValueState[TReference, TMetadata]) gotFailedDependency(err NestedError[TReference, TMetadata]) valueState[TReference, TMetadata] {
 	return &evaluationFailedValueState[TReference, TMetadata]{
-		err:                        err,
-		directVariableDependencies: vs.previousDirectVariableDependencies,
+		err:                                     err,
+		directVariableDependencies:              vs.previousDirectVariableDependencies,
+		previousDependenciesHashRecordReference: vs.previousDependenciesHashRecordReference,
 	}
 }
 
@@ -1483,7 +1484,8 @@ func (evaluatedValueState[TReference, TMetadata]) invalidate() valueState[TRefer
 type earlyFailedValueState[TReference object.BasicReference, TMetadata model_core.ReferenceMetadata] struct {
 	evaluatedValueState[TReference, TMetadata]
 
-	err error
+	err                                     error
+	previousDependenciesHashRecordReference object.LocalReference
 }
 
 func (vs *earlyFailedValueState[TReference, TMetadata]) upload(ctx context.Context, rc *RecursiveComputer[TReference, TMetadata], ks *KeyState[TReference, TMetadata]) (valueState[TReference, TMetadata], error) {
@@ -1502,8 +1504,12 @@ func (vs *earlyFailedValueState[TReference, TMetadata]) getError() error {
 	return vs.err
 }
 
-func (earlyFailedValueState[TReference, TMetadata]) getDependenciesHashRecordReference() object.LocalReference {
-	panic("key has not evaluated successfully")
+func (vs *earlyFailedValueState[TReference, TMetadata]) getDependenciesHashRecordReference() object.LocalReference {
+	var badReference object.LocalReference
+	if vs.previousDependenciesHashRecordReference == badReference {
+		panic("key has not evaluated successfully")
+	}
+	return vs.previousDependenciesHashRecordReference
 }
 
 func (earlyFailedValueState[TReference, TMetadata]) isVariableDependency() bool {
@@ -1521,8 +1527,9 @@ func (earlyFailedValueState[TReference, TMetadata]) getHoistedDependencies() []*
 type evaluationFailedValueState[TReference object.BasicReference, TMetadata model_core.ReferenceMetadata] struct {
 	evaluatedValueState[TReference, TMetadata]
 
-	err                        error
-	directVariableDependencies []*KeyState[TReference, TMetadata]
+	err                                     error
+	directVariableDependencies              []*KeyState[TReference, TMetadata]
+	previousDependenciesHashRecordReference object.LocalReference
 }
 
 func (vs *evaluationFailedValueState[TReference, TMetadata]) upload(ctx context.Context, rc *RecursiveComputer[TReference, TMetadata], ks *KeyState[TReference, TMetadata]) (valueState[TReference, TMetadata], error) {
@@ -1541,8 +1548,12 @@ func (vs *evaluationFailedValueState[TReference, TMetadata]) getError() error {
 	return vs.err
 }
 
-func (evaluationFailedValueState[TReference, TMetadata]) getDependenciesHashRecordReference() object.LocalReference {
-	panic("key has not evaluated successfully")
+func (vs *evaluationFailedValueState[TReference, TMetadata]) getDependenciesHashRecordReference() object.LocalReference {
+	var badReference object.LocalReference
+	if vs.previousDependenciesHashRecordReference == badReference {
+		panic("key has not evaluated successfully")
+	}
+	return vs.previousDependenciesHashRecordReference
 }
 
 func (evaluationFailedValueState[TReference, TMetadata]) isVariableDependency() bool {
@@ -1954,7 +1965,8 @@ func (vs *computingMessageValueState[TReference, TMetadata]) evaluate(ctx contex
 	key, err := ks.keyMessageFetcher.getNative(ctx, rc)
 	if err != nil {
 		return &earlyFailedValueState[TReference, TMetadata]{
-			err: err,
+			err:                                     err,
+			previousDependenciesHashRecordReference: vs.previousDependenciesHashRecordReference,
 		}, nil
 	}
 
@@ -1965,8 +1977,9 @@ func (vs *computingMessageValueState[TReference, TMetadata]) evaluate(ctx contex
 			missingDependencies, err := e.getMissingDependenciesOrError()
 			if err != nil {
 				return &evaluationFailedValueState[TReference, TMetadata]{
-					err:                        err,
-					directVariableDependencies: sortedKeyStates(e.directVariableDependencies),
+					err:                                     err,
+					directVariableDependencies:              sortedKeyStates(e.directVariableDependencies),
+					previousDependenciesHashRecordReference: vs.previousDependenciesHashRecordReference,
 				}, nil
 			}
 			vs.previousDirectVariableDependencies = sortedKeyStates(e.directVariableDependencies)
@@ -1984,15 +1997,17 @@ func (vs *computingMessageValueState[TReference, TMetadata]) evaluate(ctx contex
 			}
 		}
 		return &evaluationFailedValueState[TReference, TMetadata]{
-			err:                        err,
-			directVariableDependencies: sortedKeyStates(e.directVariableDependencies),
+			err:                                     err,
+			directVariableDependencies:              sortedKeyStates(e.directVariableDependencies),
+			previousDependenciesHashRecordReference: vs.previousDependenciesHashRecordReference,
 		}, nil
 	}
 	anyValue, err := model_core.MarshalTopLevelAny(model_core.Unpatch(rc.objectManager, value))
 	if err != nil {
 		return &evaluationFailedValueState[TReference, TMetadata]{
-			err:                        fmt.Errorf("failed to marshal value yielded by evaluation function: %w", err),
-			directVariableDependencies: sortedKeyStates(e.directVariableDependencies),
+			err:                                     fmt.Errorf("failed to marshal value yielded by evaluation function: %w", err),
+			directVariableDependencies:              sortedKeyStates(e.directVariableDependencies),
+			previousDependenciesHashRecordReference: vs.previousDependenciesHashRecordReference,
 		}, nil
 	}
 	if len(e.directVariableDependencies) == 0 {
