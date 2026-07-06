@@ -14,9 +14,10 @@ import (
 // references to objects that are encoded using the action encoders that
 // are part of the BuildSpecification.
 type ActionReaders[TReference any] struct {
-	CommandAction              model_parser.MessageObjectReader[TReference, *model_command_pb.Action]
-	CommandPathPatternChildren model_parser.MessageObjectReader[TReference, *model_command_pb.PathPattern_Children]
-	CommandResult              model_parser.MessageObjectReader[TReference, *model_command_pb.Result]
+	CommandAction               model_parser.MessageObjectReader[TReference, *model_command_pb.Action]
+	CommandEnvironmentVariables model_parser.MessageObjectReader[TReference, []*model_command_pb.EnvironmentVariableList_Element]
+	CommandPathPatternChildren  model_parser.MessageObjectReader[TReference, *model_command_pb.PathPattern_Children]
+	CommandResult               model_parser.MessageObjectReader[TReference, *model_command_pb.Result]
 
 	FetchResult model_parser.MessageObjectReader[TReference, *model_fetch_pb.Result]
 }
@@ -33,6 +34,13 @@ func (c *baseComputer[TReference, TMetadata]) ComputeActionReadersValue(ctx cont
 			model_parser.NewChainedObjectParser(
 				encodedObjectParser,
 				model_parser.NewProtoObjectParser[TReference, model_command_pb.Action](),
+			),
+		),
+		CommandEnvironmentVariables: model_parser.LookupParsedObjectReader(
+			c.parsedObjectPoolIngester,
+			model_parser.NewChainedObjectParser(
+				encodedObjectParser,
+				model_parser.NewProtoListObjectParser[TReference, model_command_pb.EnvironmentVariableList_Element](),
 			),
 		),
 		CommandPathPatternChildren: model_parser.LookupParsedObjectReader(
