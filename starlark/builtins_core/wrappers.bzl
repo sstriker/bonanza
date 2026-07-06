@@ -28,12 +28,76 @@ def _wrap_actions(actions, bin_dir, label):
             **kwargs
         )
 
+    def actions_template_dict():
+        # Emulation of ctx.actions.template_dict(). Substitutions are
+        # computed at analysis time instead of during execution, which
+        # is semantically equivalent for well-behaved rules.
+        entries = []
+        holder = []
+
+        def template_dict_add(key, value):
+            entries.append(("add", key, value))
+            return holder[0]
+
+        def template_dict_add_joined(
+                key,
+                values,
+                *,
+                join_with,
+                map_each,
+                uniquify = False,
+                format_joined = None,
+                allow_closure = False):
+            entries.append(("add_joined", key, values, join_with, map_each, uniquify, format_joined))
+            return holder[0]
+
+        holder.append(struct(
+            add = template_dict_add,
+            add_joined = template_dict_add_joined,
+            _entries = entries,
+        ))
+        return holder[0]
+
+    def _compute_template_dict_substitutions(computed_substitutions):
+        substitutions = {}
+        for entry in computed_substitutions._entries:
+            if entry[0] == "add":
+                substitutions[entry[1]] = entry[2]
+            else:
+                _, key, values, join_with, map_each, uniquify, format_joined = entry
+                strings = []
+                for v in values.to_list():
+                    mapped = map_each(v)
+                    if type(mapped) == "list":
+                        strings.extend([str(m) for m in mapped])
+                    elif mapped != None:
+                        strings.append(str(mapped))
+                if uniquify:
+                    strings = {s: None for s in strings}.keys()
+                joined = join_with.join(strings)
+                if format_joined != None:
+                    joined = format_joined % joined
+                substitutions[key] = joined
+        return substitutions
+
+    def actions_expand_template(*, template, output, substitutions = {}, is_executable = False, computed_substitutions = None):
+        if computed_substitutions != None:
+            substitutions = substitutions | _compute_template_dict_substitutions(computed_substitutions)
+        actions.expand_template(
+            template = template,
+            output = output,
+            substitutions = substitutions,
+            is_executable = is_executable,
+        )
+
     actions_fields = {
         field: getattr(actions, field)
         for field in dir(actions)
     } | {
         "declare_shareable_artifact": actions_declare_shareable_artifact,
+        "expand_template": actions_expand_template,
         "run_shell": actions_run_shell,
+        "template_dict": actions_template_dict,
     }
     return struct(**actions_fields)
 
