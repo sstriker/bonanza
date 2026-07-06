@@ -51,14 +51,8 @@ node(
     ],
 )
 
-# KNOWN GAP: bonanza parses aspect() definitions and attr aspects but
-# does not yet apply aspects during analysis, so this target fails with
-# 'did not yield provider TransitiveInfo'. Kept out of //:all until
-# aspect propagation is implemented; build //:aspect_labels directly to
-# reproduce.
 aspect_reader(
     name = "aspect_labels",
-    tags = ["manual"],
     deps = [":top"],
 )
 
@@ -75,12 +69,14 @@ genrule(
 genrule(
     name = "verify",
     srcs = [
+        ":aspect_labels",
         ":hello",
         ":repo_info",
         ":transitioned_mode",
     ],
     outs = ["verify.txt"],
-    cmd = "grep -q 'Hello from patched bonanza' $(location :hello) && " +
+    cmd = "grep -q 'top: \\[@@testproject+//:leaf, @@testproject+//:mid_a, @@testproject+//:mid_b, @@testproject+//:top\\]' $(location :aspect_labels) && " +
+          "grep -q 'Hello from patched bonanza' $(location :hello) && " +
           "grep -q 'module=testproject' $(location :repo_info) && " +
           "grep -q 'version=None' $(location :repo_info) && " +
           "grep -q 'repo=\"testproject+\"' $(location :repo_info) && " +
@@ -96,6 +92,7 @@ genrule(
 filegroup(
     name = "all",
     srcs = [
+        ":aspect_labels",
         ":hello",
         ":repo_info",
         ":transitioned_mode",
