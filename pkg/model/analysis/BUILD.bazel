@@ -15,6 +15,7 @@ go_library(
         "action_encoders.go",
         "action_readers.go",
         "action_result.go",
+        "analysis_failure_info.go",
         "base_computer.go",
         "build_specification.go",
         "canonical_repo_name.go",

@@ -740,6 +740,42 @@ func (c *baseComputer[TReference, TMetadata]) ComputeConfiguredTargetValue(ctx c
 			configurationReference = model_core.Nested(configurationReferences, entries[0].OutputConfigurationReference)
 		}
 
+		// Check whether --allow_analysis_failures is enabled in
+		// the target's configuration. If so, analysis failures
+		// of the target need to be caught and reported through
+		// an AnalysisFailureInfo provider, so that analysis test
+		// rules can assert on them. As bool_flag() suppresses
+		// overrides having the default value, an override is
+		// present if and only if the flag is set to True.
+		allowAnalysisFailures := false
+		allowAnalysisFailuresOverride, err := btree.Find(
+			ctx,
+			c.buildSettingOverrideReader,
+			getBuildSettingOverridesFromReference(configurationReference),
+			func(entry model_core.Message[*model_analysis_pb.BuildSettingOverride, TReference]) (int, *model_core_pb.DecodableReference) {
+				switch level := entry.Message.Level.(type) {
+				case *model_analysis_pb.BuildSettingOverride_Leaf_:
+					return strings.Compare(allowAnalysisFailuresBuildSettingLabelStr, level.Leaf.Label), nil
+				case *model_analysis_pb.BuildSettingOverride_Parent_:
+					return strings.Compare(allowAnalysisFailuresBuildSettingLabelStr, level.Parent.FirstLabel), level.Parent.Reference
+				default:
+					return 0, nil
+				}
+			},
+		)
+		if err != nil {
+			return PatchedConfiguredTargetValue[TMetadata]{}, err
+		}
+		if allowAnalysisFailuresOverride.IsSet() {
+			leaf, ok := allowAnalysisFailuresOverride.Message.Level.(*model_analysis_pb.BuildSettingOverride_Leaf_)
+			if !ok {
+				return PatchedConfiguredTargetValue[TMetadata]{}, errors.New("build setting override is not a valid leaf")
+			}
+			if v, ok := leaf.Leaf.Value.GetKind().(*model_starlark_pb.Value_Bool); ok {
+				allowAnalysisFailures = v.Bool
+			}
+		}
+
 		// Compute non-label attrs that depend on a
 		// configuration, due to them using select().
 		missingDependencies := false
@@ -895,6 +931,7 @@ func (c *baseComputer[TReference, TMetadata]) ComputeConfiguredTargetValue(ctx c
 		}
 
 		// Last but not least, get the values of label attr.
+		var failedDepProviders []model_core.Message[*model_starlark_pb.Struct, TReference]
 		executableValues := map[string]any{}
 		executableFileToFilesToRun := map[*model_starlark.File[TReference, TMetadata]]model_core.Message[*model_starlark_pb.Struct, TReference]{}
 		fileValues := map[string]any{}
@@ -1083,6 +1120,21 @@ func (c *baseComputer[TReference, TMetadata]) ComputeConfiguredTargetValue(ctx c
 						}
 						providerInstances := model_core.Nested(targetProviders, targetProviders.Message.ProviderInstances)
 
+						// Keep track of dependencies whose
+						// analysis failed, so that their
+						// failure causes can be propagated
+						// if --allow_analysis_failures is
+						// enabled.
+						analysisFailureInfoProviderIdentifierStr := analysisFailureInfoProviderIdentifier.String()
+						if analysisFailureInfoIndex, ok := sort.Find(
+							len(providerInstances.Message),
+							func(i int) int {
+								return strings.Compare(analysisFailureInfoProviderIdentifierStr, providerInstances.Message[i].ProviderInstanceProperties.GetProviderIdentifier())
+							},
+						); ok {
+							failedDepProviders = append(failedDepProviders, model_core.Nested(providerInstances, providerInstances.Message[analysisFailureInfoIndex]))
+						}
+
 						defaultInfoProviderIdentifierStr := defaultInfoProviderIdentifier.String()
 						defaultInfoIndex, ok := sort.Find(
 							len(providerInstances.Message),
@@ -1229,6 +1281,14 @@ func (c *baseComputer[TReference, TMetadata]) ComputeConfiguredTargetValue(ctx c
 		}
 		if missingDependencies {
 			return PatchedConfiguredTargetValue[TMetadata]{}, evaluation.ErrMissingDependency
+		}
+
+		// If analysis of one or more dependencies failed, don't
+		// invoke the implementation function. Instead, propagate
+		// the failure causes of the dependencies, matching
+		// Bazel's behavior.
+		if allowAnalysisFailures && len(failedDepProviders) > 0 {
+			return c.computeAnalysisFailureConfiguredTargetValue(ctx, e, key, targetLabel, emptyDefaultInfo, "", failedDepProviders)
 		}
 
 		rc := &ruleContext[TReference, TMetadata]{
@@ -1389,11 +1449,22 @@ func (c *baseComputer[TReference, TMetadata]) ComputeConfiguredTargetValue(ctx c
 			/* kwargs = */ nil,
 		)
 		if err != nil {
-			if !errors.Is(err, evaluation.ErrMissingDependency) {
-				var evalErr *starlark.EvalError
-				if errors.As(err, &evalErr) {
-					return PatchedConfiguredTargetValue[TMetadata]{}, errors.New(evalErr.Backtrace())
-				}
+			if errors.Is(err, evaluation.ErrMissingDependency) {
+				return PatchedConfiguredTargetValue[TMetadata]{}, err
+			}
+			// Infrastructure errors (cancellation, storage
+			// unavailability) must never be demoted to analysis
+			// failures, as the resulting cached value would not
+			// be a pure function of the evaluation key.
+			if ctx.Err() != nil || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+				return PatchedConfiguredTargetValue[TMetadata]{}, err
+			}
+			var evalErr *starlark.EvalError
+			if errors.As(err, &evalErr) {
+				err = errors.New(evalErr.Backtrace())
+			}
+			if allowAnalysisFailures {
+				return c.computeAnalysisFailureConfiguredTargetValue(ctx, e, key, targetLabel, emptyDefaultInfo, err.Error(), failedDepProviders)
 			}
 			return PatchedConfiguredTargetValue[TMetadata]{}, err
 		}
@@ -1408,7 +1479,11 @@ func (c *baseComputer[TReference, TMetadata]) ComputeConfiguredTargetValue(ctx c
 				unpack.List(structUnpackerInto),
 			}),
 		).UnpackInto(thread, returnValue, &providerInstances); err != nil {
-			return PatchedConfiguredTargetValue[TMetadata]{}, fmt.Errorf("failed to unpack implementation function return value: %w", err)
+			err = fmt.Errorf("failed to unpack implementation function return value: %w", err)
+			if allowAnalysisFailures && !errors.Is(err, evaluation.ErrMissingDependency) && ctx.Err() == nil {
+				return c.computeAnalysisFailureConfiguredTargetValue(ctx, e, key, targetLabel, emptyDefaultInfo, err.Error(), failedDepProviders)
+			}
+			return PatchedConfiguredTargetValue[TMetadata]{}, err
 		}
 
 		return model_core.BuildPatchedMessage(func(patcher *model_core.ReferenceMessagePatcher[TMetadata]) (*model_analysis_pb.ConfiguredTarget_Value, error) {
