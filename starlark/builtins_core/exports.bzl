@@ -1645,6 +1645,7 @@ exported_toplevels = {
     ),
     "testing": struct(
         ExecutionInfo = ExecutionInfo,
+        analysis_test = testing.analysis_test,
     ),
 }
 

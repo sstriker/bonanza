@@ -777,6 +777,13 @@ message RuleTarget {
   // default value if the build setting is not set explicitly is
   // provided.
   Value build_setting_default = 7;
+
+  // If set instead of rule_identifier, the definition of the rule used
+  // by this target is provided inline instead of referring to a global
+  // declared in a .bzl file. This is used for anonymous rules that are
+  // synthesized at loading time, such as the ones created by calls to
+  // testing.analysis_test().
+  Rule.Definition rule_definition = 8;
 }
 
 message Select {
