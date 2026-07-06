@@ -1,4 +1,5 @@
 load("@bazel_skylib//rules:common_settings.bzl", "string_flag")
+load(":aspects.bzl", "aspect_reader", "node")
 load(":defs.bzl", "repo_info", "setting_reader", "verify_native_apis")
 
 string_flag(
@@ -26,6 +27,40 @@ setting_reader(
 )
 
 verify_native_apis()
+
+# A diamond dependency graph walked by collector_aspect. The aspect
+# merges postorder depsets of labels; the leaf must be deduplicated
+# even though it is reachable via both mid_a and mid_b.
+node(name = "leaf")
+
+node(
+    name = "mid_a",
+    deps = [":leaf"],
+)
+
+node(
+    name = "mid_b",
+    deps = [":leaf"],
+)
+
+node(
+    name = "top",
+    deps = [
+        ":mid_a",
+        ":mid_b",
+    ],
+)
+
+# KNOWN GAP: bonanza parses aspect() definitions and attr aspects but
+# does not yet apply aspects during analysis, so this target fails with
+# 'did not yield provider TransitiveInfo'. Kept out of //:all until
+# aspect propagation is implemented; build //:aspect_labels directly to
+# reproduce.
+aspect_reader(
+    name = "aspect_labels",
+    tags = ["manual"],
+    deps = [":top"],
+)
 
 # Verifies, on the worker, that the artifacts produced by the targets
 # above have the expected contents. If any assertion fails, the build
