@@ -3047,8 +3047,26 @@ func (mrc *moduleOrRepositoryContext[TReference, TMetadata]) Readdir(p *model_st
 		return nil, fmt.Errorf("cannot resolve %#v: %w", p.GetUNIXString(), err)
 	}
 	if r.gotScope {
-		// TODO: Implement.
-		return nil, fmt.Errorf("path.readdir(%#v) for paths in the input root has not been implemented yet", p.GetUNIXString())
+		// Path resolves to a location inside the input root.
+		// Enumerate the directory's contents directly.
+		d := r.stack.Peek()
+		if err := d.maybeLoadContents(mrc.directoryLoadOptions); err != nil {
+			return nil, err
+		}
+		names := make([]path.Component, 0, len(d.directories)+len(d.files)+len(d.symlinks))
+		for name := range d.directories {
+			names = append(names, name)
+		}
+		for name := range d.files {
+			names = append(names, name)
+		}
+		for name := range d.symlinks {
+			names = append(names, name)
+		}
+		slices.SortFunc(names, func(a, b path.Component) int {
+			return strings.Compare(a.String(), b.String())
+		})
+		return names, nil
 	}
 
 	// Path resolves to a location that is not part of the input
