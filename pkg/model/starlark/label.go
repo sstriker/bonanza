@@ -3,6 +3,7 @@ package starlark
 import (
 	"fmt"
 	go_path "path"
+	"strings"
 
 	pg_label "bonanza.build/pkg/label"
 	model_core "bonanza.build/pkg/model/core"
@@ -29,6 +30,7 @@ type Label[TReference any, TMetadata model_core.ReferenceMetadata] struct {
 var (
 	_ EncodableValue[object.LocalReference, model_core.ReferenceMetadata] = Label[object.LocalReference, model_core.ReferenceMetadata]{}
 	_ HasLabels                                                           = Label[object.LocalReference, model_core.ReferenceMetadata]{}
+	_ starlark.Comparable                                                 = Label[object.LocalReference, model_core.ReferenceMetadata]{}
 	_ starlark.HasAttrs                                                   = Label[object.LocalReference, model_core.ReferenceMetadata]{}
 	_ starlark.Value                                                      = Label[object.LocalReference, model_core.ReferenceMetadata]{}
 )
@@ -64,6 +66,29 @@ func (Label[TReference, TMetadata]) Truth() starlark.Bool {
 // used as a key in a dict.
 func (l Label[TReference, TMetadata]) Hash(thread *starlark.Thread) (uint32, error) {
 	return starlark.String(l.value.String()).Hash(thread)
+}
+
+// CompareSameType compares two Starlark label objects. Like in Bazel,
+// labels are ordered by their canonical string representation, so that
+// lists of labels can be sorted.
+func (l Label[TReference, TMetadata]) CompareSameType(thread *starlark.Thread, op syntax.Token, other starlark.Value, depth int) (bool, error) {
+	cmp := strings.Compare(l.value.String(), other.(Label[TReference, TMetadata]).value.String())
+	switch op {
+	case syntax.EQL:
+		return cmp == 0, nil
+	case syntax.NEQ:
+		return cmp != 0, nil
+	case syntax.LT:
+		return cmp < 0, nil
+	case syntax.LE:
+		return cmp <= 0, nil
+	case syntax.GT:
+		return cmp > 0, nil
+	case syntax.GE:
+		return cmp >= 0, nil
+	default:
+		return false, fmt.Errorf("unsupported comparison %s", op)
+	}
 }
 
 // Attr computes the value of an attribute of a Starlark label object
