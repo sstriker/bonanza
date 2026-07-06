@@ -83,16 +83,6 @@ func (tr *TargetRegistrar[TReference, TMetadata]) GetTargetNames() []string {
 	return slices.Sorted(maps.Keys(tr.targets))
 }
 
-var sourceFileTarget = &model_starlark_pb.Target_Definition{
-	Kind: &model_starlark_pb.Target_Definition_SourceFileTarget{
-		SourceFileTarget: &model_starlark_pb.SourceFileTarget{
-			Visibility: &model_starlark_pb.PackageGroup{
-				Tree: &model_starlark_pb.PackageGroup_Subpackages{},
-			},
-		},
-	},
-}
-
 // GetAndRemoveTarget gets the definition of the target from the
 // TargetRegistrar and subsequently removes it. The caller then owns the
 // message and its associated resources.
@@ -101,9 +91,24 @@ func (tr *TargetRegistrar[TReference, TMetadata]) GetAndRemoveTarget(name string
 	delete(tr.targets, name)
 	if !target.IsSet() {
 		// Target is referenced, but not provided explicitly.
-		// Assume it refers to a source file with private
+		// Assume it refers to a source file. Unless
+		// --incompatible_no_implicit_file_export takes effect,
+		// Bazel gives such files the package's default
 		// visibility.
-		target = model_core.NewSimplePatchedMessage[TMetadata](sourceFileTarget)
+		visibilityPackageGroup := model_core.Patch(
+			tr.objectManager,
+			model_core.Nested(tr.defaultInheritableAttrs, tr.defaultInheritableAttrs.Message.Visibility),
+		)
+		target = model_core.NewPatchedMessage(
+			&model_starlark_pb.Target_Definition{
+				Kind: &model_starlark_pb.Target_Definition_SourceFileTarget{
+					SourceFileTarget: &model_starlark_pb.SourceFileTarget{
+						Visibility: visibilityPackageGroup.Message,
+					},
+				},
+			},
+			visibilityPackageGroup.Patcher,
+		)
 	}
 	return target
 }
