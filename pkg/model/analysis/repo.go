@@ -707,8 +707,13 @@ func (r *changeTrackingDirectoryExistingFileResolver[TReference, TMetadata]) OnD
 		}, nil
 	}
 	if target, ok := d.symlinks[name]; ok {
+		// The resolver itself acts as the scope walker for the
+		// symlink target. Absolute targets are mapped back into
+		// the input root by the virtual root scope walker
+		// through which resolution was started, which decorates
+		// this response.
 		return path.GotSymlink{
-			Parent: path.NewRelativeScopeWalker(r),
+			Parent: r,
 			Target: target,
 		}, nil
 	}
@@ -725,7 +730,7 @@ func (r *changeTrackingDirectoryExistingFileResolver[TReference, TMetadata]) OnT
 	}
 	if target, ok := d.symlinks[name]; ok {
 		return &path.GotSymlink{
-			Parent: path.NewRelativeScopeWalker(r),
+			Parent: r,
 			Target: target,
 		}, nil
 	}
