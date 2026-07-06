@@ -1,3 +1,4 @@
+AnalysisFailure = provider()
 AnalysisFailureInfo = provider()
 AnalysisTestResultInfo = provider()
 ConfigSettingInfo = provider()
