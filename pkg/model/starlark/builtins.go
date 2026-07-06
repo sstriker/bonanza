@@ -204,7 +204,7 @@ func convertFragmentsToAttr[TReference object.BasicReference, TMetadata model_co
 			)
 		}
 		attrs[fragmentsAttrIdentifier] = NewAttr[TReference, TMetadata](
-			NewLabelListAttrType[TReference, TMetadata](glob.NFAMatchingNothing.Bytes(), cfg),
+			NewLabelListAttrType[TReference, TMetadata](glob.NFAMatchingNothing.Bytes(), cfg, nil),
 			starlark.NewList(fragmentsLabels),
 		)
 	}
@@ -233,21 +233,21 @@ func GetBuiltins[TReference object.BasicReference, TMetadata model_core.Referenc
 	)
 
 	configurationAttr := NewAttr[TReference, TMetadata](
-		NewLabelAttrType[TReference, TMetadata](false, false, false, glob.NFAMatchingNothing.Bytes(), targetTransitionDefinition),
+		NewLabelAttrType[TReference, TMetadata](false, false, false, glob.NFAMatchingNothing.Bytes(), targetTransitionDefinition, nil),
 		NewLabel[TReference, TMetadata](configurationFragmentLabel.AsResolved()),
 	)
 	defaultToolchainsAttr := NewAttr[TReference, TMetadata](
-		NewLabelListAttrType[TReference, TMetadata](glob.NFAMatchingNothing.Bytes(), targetTransitionDefinition),
+		NewLabelListAttrType[TReference, TMetadata](glob.NFAMatchingNothing.Bytes(), targetTransitionDefinition, nil),
 		starlark.NewList([]starlark.Value{
 			NewLabel[TReference, TMetadata](defaultMakeVariablesLabel.AsResolved()),
 		}),
 	)
 	toolchainsAttr := NewAttr[TReference, TMetadata](
-		NewLabelListAttrType[TReference, TMetadata](glob.NFAMatchingNothing.Bytes(), targetTransitionDefinition),
+		NewLabelListAttrType[TReference, TMetadata](glob.NFAMatchingNothing.Bytes(), targetTransitionDefinition, nil),
 		starlark.NewList(nil),
 	)
 	targetPlatformAttr := NewAttr[TReference, TMetadata](
-		NewLabelAttrType[TReference, TMetadata](false, false, false, glob.NFAMatchingNothing.Bytes(), targetTransitionDefinition),
+		NewLabelAttrType[TReference, TMetadata](false, false, false, glob.NFAMatchingNothing.Bytes(), targetTransitionDefinition, nil),
 		NewLabel[TReference, TMetadata](commandLineOptionPlatformsLabel.AsResolved()),
 	)
 
@@ -455,7 +455,10 @@ func GetBuiltins[TReference object.BasicReference, TMetadata model_core.Referenc
 				); err != nil {
 					return nil, err
 				}
-				return NewAspect[TReference, TMetadata](nil, &model_starlark_pb.Aspect_Definition{}), nil
+				// TODO: attrs, requires, required_providers,
+				// required_aspect_providers, provides and
+				// toolchains are currently parsed, but ignored.
+				return NewAspect[TReference, TMetadata](nil, NewStarlarkAspectDefinition(attrAspects, implementation)), nil
 			},
 		),
 		"attr": NewStructFromDict[TReference, TMetadata](nil, map[string]any{
@@ -621,7 +624,7 @@ func GetBuiltins[TReference object.BasicReference, TMetadata model_core.Referenc
 						cfg = targetTransitionDefinition
 					}
 
-					attrType := NewLabelAttrType[TReference, TMetadata](!mandatory, allowSingleFile != nil, executable, allowFiles.Bytes(), cfg)
+					attrType := NewLabelAttrType[TReference, TMetadata](!mandatory, allowSingleFile != nil, executable, allowFiles.Bytes(), cfg, aspects)
 					if mandatory {
 						defaultValue = nil
 					} else {
@@ -668,7 +671,7 @@ func GetBuiltins[TReference object.BasicReference, TMetadata model_core.Referenc
 						return nil, err
 					}
 
-					attrType := NewLabelKeyedStringDictAttrType[TReference, TMetadata](allowFiles.Bytes(), cfg)
+					attrType := NewLabelKeyedStringDictAttrType[TReference, TMetadata](allowFiles.Bytes(), cfg, aspects)
 					if mandatory {
 						defaultValue = nil
 					} else {
@@ -719,7 +722,7 @@ func GetBuiltins[TReference object.BasicReference, TMetadata model_core.Referenc
 						return nil, err
 					}
 
-					attrType := NewLabelListAttrType[TReference, TMetadata](allowFiles.Bytes(), cfg)
+					attrType := NewLabelListAttrType[TReference, TMetadata](allowFiles.Bytes(), cfg, aspects)
 					if mandatory {
 						defaultValue = nil
 					} else {
@@ -886,7 +889,7 @@ func GetBuiltins[TReference object.BasicReference, TMetadata model_core.Referenc
 						return nil, err
 					}
 
-					attrType := NewStringKeyedLabelDictAttrType[TReference, TMetadata](allowFiles.Bytes(), cfg)
+					attrType := NewStringKeyedLabelDictAttrType[TReference, TMetadata](allowFiles.Bytes(), cfg, aspects)
 					if mandatory {
 						defaultValue = nil
 					} else {
