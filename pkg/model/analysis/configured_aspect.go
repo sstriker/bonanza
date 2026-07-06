@@ -254,6 +254,29 @@ func (c *baseComputer[TReference, TMetadata]) ComputeConfiguredAspectValue(ctx c
 	attrValues["tags"] = starlark.NewList(tags)
 	attrValues["testonly"] = starlark.Bool(ruleTarget.InheritableAttrs.GetTestonly())
 
+	visibilityValue, err := newVisibilityAttrValue[TReference, TMetadata](targetLabel, ruleTarget.InheritableAttrs)
+	if err != nil {
+		return PatchedConfiguredAspectValue[TMetadata]{}, err
+	}
+	attrValues["visibility"] = visibilityValue
+
+	if v, err := c.decodeSelectGroupsAttrValue(ctx, e, thread, model_core.Nested(targetValue, ruleTarget.Features), configurationReference, targetPackage); err != nil {
+		if !errors.Is(err, evaluation.ErrMissingDependency) {
+			return PatchedConfiguredAspectValue[TMetadata]{}, fmt.Errorf("features: %w", err)
+		}
+		missingDependencies = true
+	} else {
+		attrValues["features"] = v
+	}
+	if v, err := c.decodeSelectGroupsAttrValue(ctx, e, thread, model_core.Nested(targetValue, ruleTarget.TargetCompatibleWith), configurationReference, targetPackage); err != nil {
+		if !errors.Is(err, evaluation.ErrMissingDependency) {
+			return PatchedConfiguredAspectValue[TMetadata]{}, fmt.Errorf("target_compatible_with: %w", err)
+		}
+		missingDependencies = true
+	} else {
+		attrValues["target_compatible_with"] = v
+	}
+
 	attrAspects := aspectDefinition.Message.AttrAspects
 	propagateToAllAttrs := slices.Contains(attrAspects, "*")
 	extraAspectIdentifiers := []string{aspectIdentifier.String()}

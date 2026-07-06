@@ -343,6 +343,93 @@ func getAttrValueParts[TReference object.BasicReference, TMetadata model_core.Re
 	return model_core.Nested(namedAttr, []*model_starlark_pb.Value{defaultValue}), true, nil
 }
 
+// decodeSelectGroupsAttrValue resolves a sequence of select() groups
+// that are stored directly on a RuleTarget (i.e., the "features" and
+// "target_compatible_with" common attributes) against a configuration
+// and decodes them to a Starlark value for exposure through ctx.attr.
+func (c *baseComputer[TReference, TMetadata]) decodeSelectGroupsAttrValue(
+	ctx context.Context,
+	e getValueFromSelectGroupEnvironment[TReference, TMetadata],
+	thread *starlark.Thread,
+	selectGroups model_core.Message[[]*model_starlark_pb.Select_Group, TReference],
+	configurationReference model_core.Message[*model_core_pb.DecodableReference, TReference],
+	fromPackage label.CanonicalPackage,
+) (starlark.Value, error) {
+	if len(selectGroups.Message) == 0 {
+		// Value was absent (e.g., message written by an older
+		// version of this code). Present it as an empty list.
+		emptyList := starlark.NewList(nil)
+		emptyList.Freeze()
+		return emptyList, nil
+	}
+	var attrValue starlark.Value
+	missingDependencies := false
+	for _, selectGroup := range selectGroups.Message {
+		valuePart, err := getValueFromSelectGroup(e, configurationReference, fromPackage, selectGroup, false)
+		if err != nil {
+			if errors.Is(err, evaluation.ErrMissingDependency) {
+				// Continue processing the remaining select
+				// groups, so that all dependencies are
+				// requested in a single evaluation round.
+				missingDependencies = true
+				continue
+			}
+			return nil, err
+		}
+		decodedPart, err := model_starlark.DecodeValue[TReference, TMetadata](
+			model_core.Nested(selectGroups, valuePart),
+			/* currentIdentifier = */ nil,
+			c.getValueDecodingOptions(ctx, func(originalLabel label.ResolvedLabel) (starlark.Value, error) {
+				// Leave targets unconfigured, matching the
+				// unconfigured branch of configureAttrValueParts.
+				return model_starlark.NewTargetReference[TReference, TMetadata](
+					originalLabel,
+					/* configured = */ nil,
+				), nil
+			}),
+		)
+		if err != nil {
+			return nil, err
+		}
+		if err := concatenateAttrValueParts(thread, &attrValue, decodedPart); err != nil {
+			return nil, err
+		}
+	}
+	if missingDependencies {
+		return nil, evaluation.ErrMissingDependency
+	}
+	attrValue.Freeze()
+	return attrValue, nil
+}
+
+// newVisibilityAttrValue constructs the value of the "visibility"
+// common attribute that is exposed through ctx.attr, based on the
+// visibility labels that were recorded when the target was declared.
+func newVisibilityAttrValue[TReference object.BasicReference, TMetadata model_core.ReferenceMetadata](targetLabel label.CanonicalLabel, inheritableAttrs *model_starlark_pb.InheritableAttrs) (starlark.Value, error) {
+	visibilityLabels := inheritableAttrs.GetVisibilityLabels()
+	elements := make([]starlark.Value, 0, len(visibilityLabels))
+	if len(visibilityLabels) == 0 {
+		// No visibility was specified. Bazel presents this as
+		// ["//visibility:private"].
+		privateLabel, err := label.NewResolvedLabel(fmt.Sprintf("@@%s//visibility:private", targetLabel.GetCanonicalPackage().GetCanonicalRepo()))
+		if err != nil {
+			return nil, err
+		}
+		elements = append(elements, model_starlark.NewLabel[TReference, TMetadata](privateLabel))
+	} else {
+		for _, visibilityLabel := range visibilityLabels {
+			l, err := label.NewResolvedLabel(visibilityLabel)
+			if err != nil {
+				return nil, fmt.Errorf("invalid visibility label %#v: %w", visibilityLabel, err)
+			}
+			elements = append(elements, model_starlark.NewLabel[TReference, TMetadata](l))
+		}
+	}
+	visibilityList := starlark.NewList(elements)
+	visibilityList.Freeze()
+	return visibilityList, nil
+}
+
 func (c *baseComputer[TReference, TMetadata]) configureAttrValueParts(
 	ctx context.Context,
 	e ConfiguredTargetEnvironment[TReference, TMetadata],
@@ -654,6 +741,12 @@ func (c *baseComputer[TReference, TMetadata]) ComputeConfiguredTargetValue(ctx c
 
 		attrValues["testonly"] = starlark.Bool(ruleTarget.InheritableAttrs.GetTestonly())
 
+		visibilityValue, err := newVisibilityAttrValue[TReference, TMetadata](targetLabel, ruleTarget.InheritableAttrs)
+		if err != nil {
+			return PatchedConfiguredTargetValue[TMetadata]{}, err
+		}
+		attrValues["visibility"] = visibilityValue
+
 		edgeTransitionAttrValues := make(map[string]any, len(ruleDefinition.Message.Attrs)+2)
 		for k, v := range attrValues {
 			edgeTransitionAttrValues[k] = v
@@ -813,6 +906,28 @@ func (c *baseComputer[TReference, TMetadata]) ComputeConfiguredTargetValue(ctx c
 		outputsValues := map[string]any{}
 		ruleTargetPublicAttrValues = ruleTarget.PublicAttrValues
 		targetPackage := targetLabel.GetCanonicalPackage()
+
+		// Expose the "features" and "target_compatible_with"
+		// common attributes through ctx.attr. Both may contain
+		// select() expressions, which need to be resolved
+		// against the target's own configuration.
+		if v, err := c.decodeSelectGroupsAttrValue(ctx, e, thread, model_core.Nested(targetValue, ruleTarget.Features), configurationReference, targetPackage); err != nil {
+			if !errors.Is(err, evaluation.ErrMissingDependency) {
+				return PatchedConfiguredTargetValue[TMetadata]{}, fmt.Errorf("features: %w", err)
+			}
+			missingDependencies = true
+		} else {
+			attrValues["features"] = v
+		}
+		if v, err := c.decodeSelectGroupsAttrValue(ctx, e, thread, model_core.Nested(targetValue, ruleTarget.TargetCompatibleWith), configurationReference, targetPackage); err != nil {
+			if !errors.Is(err, evaluation.ErrMissingDependency) {
+				return PatchedConfiguredTargetValue[TMetadata]{}, fmt.Errorf("target_compatible_with: %w", err)
+			}
+			missingDependencies = true
+		} else {
+			attrValues["target_compatible_with"] = v
+		}
+
 		outputRegistrar := targetOutputRegistrar[TReference, TMetadata]{
 			configurationReference: configurationReference,
 			targetLabel:            targetLabel,
