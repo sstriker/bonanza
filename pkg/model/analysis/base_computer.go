@@ -261,6 +261,7 @@ func (c *baseComputer[TReference, TMetadata]) preloadBzlGlobals(e loadBzlGlobals
 type starlarkThreadEnvironment[TReference any] interface {
 	loadBzlGlobalsEnvironment[TReference]
 	GetCompiledBzlFileFunctionFactoryValue(*model_analysis_pb.CompiledBzlFileFunctionFactory_Key) (*starlark.FunctionFactory, bool)
+	GetRootModuleValue(*model_analysis_pb.RootModule_Key) model_core.Message[*model_analysis_pb.RootModule_Value, TReference]
 }
 
 // trimBuiltinModuleNames truncates the list of built-in module names up
@@ -303,6 +304,16 @@ func (c *baseComputer[TReference, TMetadata]) newStarlarkThread(ctx context.Cont
 		model_starlark.ValueDecodingOptionsKey,
 		c.getValueDecodingOptions(ctx, func(resolvedLabel label.ResolvedLabel) (starlark.Value, error) {
 			return model_starlark.NewLabel[TReference, TMetadata](resolvedLabel), nil
+		}),
+	)
+	thread.SetLocal(
+		model_starlark.RootModuleNameResolverKey,
+		model_starlark.RootModuleNameResolver(func() (string, error) {
+			rootModuleValue := e.GetRootModuleValue(&model_analysis_pb.RootModule_Key{})
+			if !rootModuleValue.IsSet() {
+				return "", evaluation.ErrMissingDependency
+			}
+			return rootModuleValue.Message.RootModuleName, nil
 		}),
 	)
 	return thread
