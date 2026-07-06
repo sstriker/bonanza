@@ -753,6 +753,7 @@ func DecodeValue[TReference object.BasicReference, TMetadata model_core.Referenc
 			configuredTargetReference = NewConfiguredTargetReference[TReference, TMetadata](
 				label,
 				model_core.Nested(encodedValue, configured.Providers),
+				/* getActions = */ nil,
 			)
 		}
 		return NewTargetReference[TReference, TMetadata](

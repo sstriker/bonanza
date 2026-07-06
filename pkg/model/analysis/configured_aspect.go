@@ -330,6 +330,7 @@ func (c *baseComputer[TReference, TMetadata]) ComputeConfiguredAspectValue(ctx c
 		model_starlark.NewConfiguredTargetReference[TReference, TMetadata](
 			targetLabel,
 			model_core.Nested(targetProviders, targetProviders.Message.ProviderInstances),
+			c.newTargetActionsResolver(ctx, e, targetLabel, configurationReference),
 		),
 	)
 

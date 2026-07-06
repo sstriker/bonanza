@@ -471,6 +471,7 @@ func (c *baseComputer[TReference, TMetadata]) configureAttrValueParts(
 					model_starlark.NewConfiguredTargetReference[TReference, TMetadata](
 						resolvedLabel,
 						providerInstances,
+						c.newTargetActionsResolver(ctx, e, resolvedLabel, configurationReference),
 					),
 				), nil
 			})
@@ -1241,6 +1242,7 @@ func (c *baseComputer[TReference, TMetadata]) ComputeConfiguredTargetValue(ctx c
 							model_starlark.NewConfiguredTargetReference[TReference, TMetadata](
 								canonicalResolvedLabel,
 								providerInstances,
+								c.newTargetActionsResolver(ctx, e, canonicalResolvedLabel, outputConfigurationReference),
 							),
 						), nil
 					})
