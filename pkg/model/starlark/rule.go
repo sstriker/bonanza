@@ -523,6 +523,10 @@ func (r *rule[TReference, TMetadata]) CallInternal(thread *starlark.Thread, args
 	}
 	for i, attrName := range attrNames {
 		if v := values[i]; v != nil {
+			v, err := copyExistingRuleAttrValue[TReference, TMetadata](thread, v)
+			if err != nil {
+				return nil, err
+			}
 			v.Freeze()
 			existingRule[attrName.String()] = v
 		}
@@ -530,6 +534,74 @@ func (r *rule[TReference, TMetadata]) CallInternal(thread *starlark.Thread, args
 	targetRegistrar.registerExistingRule(name, existingRule)
 
 	return starlark.None, nil
+}
+
+// copyExistingRuleAttrValue copies an attribute value that was provided
+// to a rule, so that it can be recorded for reporting through
+// native.existing_rule() and native.existing_rules() without needing to
+// freeze the value owned by the caller.
+func copyExistingRuleAttrValue[TReference object.BasicReference, TMetadata model_core.ReferenceMetadata](thread *starlark.Thread, v starlark.Value) (starlark.Value, error) {
+	switch v := v.(type) {
+	case *starlark.List:
+		elements := make([]starlark.Value, v.Len())
+		for i := range elements {
+			var err error
+			elements[i], err = copyExistingRuleAttrValue[TReference, TMetadata](thread, v.Index(i))
+			if err != nil {
+				return nil, err
+			}
+		}
+		return starlark.NewList(elements), nil
+	case *starlark.Dict:
+		copied := starlark.NewDict(v.Len())
+		for _, item := range v.Items() {
+			value, err := copyExistingRuleAttrValue[TReference, TMetadata](thread, item[1])
+			if err != nil {
+				return nil, err
+			}
+			if err := copied.SetKey(thread, item[0], value); err != nil {
+				return nil, err
+			}
+		}
+		return copied, nil
+	case starlark.Tuple:
+		elements := make(starlark.Tuple, len(v))
+		for i, element := range v {
+			var err error
+			elements[i], err = copyExistingRuleAttrValue[TReference, TMetadata](thread, element)
+			if err != nil {
+				return nil, err
+			}
+		}
+		return elements, nil
+	case *Select[TReference, TMetadata]:
+		groups := make([]SelectGroup, 0, len(v.groups))
+		for _, group := range v.groups {
+			var conditions map[pg_label.ResolvedLabel]starlark.Value
+			if group.conditions != nil {
+				conditions = make(map[pg_label.ResolvedLabel]starlark.Value, len(group.conditions))
+				for condition, conditionValue := range group.conditions {
+					copiedValue, err := copyExistingRuleAttrValue[TReference, TMetadata](thread, conditionValue)
+					if err != nil {
+						return nil, err
+					}
+					conditions[condition] = copiedValue
+				}
+			}
+			defaultValue := group.defaultValue
+			if defaultValue != nil {
+				var err error
+				defaultValue, err = copyExistingRuleAttrValue[TReference, TMetadata](thread, defaultValue)
+				if err != nil {
+					return nil, err
+				}
+			}
+			groups = append(groups, NewSelectGroup(conditions, defaultValue, group.noMatchError))
+		}
+		return NewSelect[TReference, TMetadata](groups, v.concatenationOperator), nil
+	default:
+		return v, nil
+	}
 }
 
 func (r *rule[TReference, TMetadata]) EncodeValue(path map[starlark.Value]struct{}, currentIdentifier *pg_label.CanonicalStarlarkIdentifier, options *ValueEncodingOptions[TReference, TMetadata]) (model_core.PatchedMessage[*model_starlark_pb.Value, TMetadata], bool, error) {
