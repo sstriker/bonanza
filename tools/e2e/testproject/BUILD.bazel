@@ -66,6 +66,13 @@ aspect_reader(
 # above have the expected contents. If any assertion fails, the build
 # fails.
 genrule(
+    name = "verify_repo_conformance",
+    srcs = ["@conformance//:results.txt"],
+    outs = ["verify_repo_conformance.txt"],
+    cmd = "if grep -v '=ok' $(location @conformance//:results.txt); then echo 'repository_ctx conformance failures above'; exit 1; fi && cp $(location @conformance//:results.txt) $@",
+)
+
+genrule(
     name = "verify",
     srcs = [
         ":hello",
@@ -93,5 +100,6 @@ filegroup(
         ":repo_info",
         ":transitioned_mode",
         ":verify",
+        ":verify_repo_conformance",
     ],
 )

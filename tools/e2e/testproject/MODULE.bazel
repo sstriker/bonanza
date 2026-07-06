@@ -15,3 +15,7 @@ bazel_dep(name = "rules_python", version = "2.0.3")
 bazel_dep(name = "rules_shell", version = "0.8.0")
 
 register_execution_platforms("//platforms:exec")
+
+conformance_ext = use_extension("//:repo_conformance.bzl", "conformance_ext")
+conformance_ext.flavor(name = "vanilla")
+use_repo(conformance_ext, "conformance")
