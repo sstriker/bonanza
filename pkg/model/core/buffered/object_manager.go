@@ -77,7 +77,13 @@ type objectContentsWalker struct {
 func (w objectContentsWalker) GetContents(ctx context.Context) (*object.Contents, []dag.ObjectContentsWalker, error) {
 	m := &w.embeddedMetadata
 	if m.contents == nil {
-		return nil, nil, status.Error(codes.Internal, "Contents for this object are not available for upload, as this object was expected to already exist")
+		// Use FAILED_PRECONDITION, matching how storage backends
+		// that are expected to hold all referenced objects
+		// report missing ones (see
+		// pkg/storage/object/existenceprecondition). This allows
+		// callers to invalidate and recompute cached results
+		// that reference objects that are no longer present.
+		return nil, nil, status.Error(codes.FailedPrecondition, "Contents for this object are not available for upload, as this object was expected to already exist")
 	}
 
 	walkers := make([]dag.ObjectContentsWalker, 0, len(m.children))
