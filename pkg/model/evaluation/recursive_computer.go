@@ -287,14 +287,31 @@ func (rc *RecursiveComputer[TReference, TMetadata]) ProcessNextUploadableKey(ctx
 	rc.lock.Unlock()
 
 	newValueState, err := valueState.upload(ctx, rc, ks)
-	if err != nil {
+	if err != nil && !isMissingObjectError(err) {
 		return false, err
 	}
+	// If uploading failed because objects referenced by the results
+	// (e.g., graphlets of dependencies that were cache hits) are no
+	// longer present in storage, skip writing this cache entry. A
+	// subsequent build will recompute and rewrite it.
 
 	rc.lock.Lock()
 	ks.valueState = newValueState
 	rc.uploadingKeys.remove(ks)
-	rc.completedKeys.pushLast(ks)
+	if ks.invalidateAfterUpload {
+		// The results of this key were invalidated while the
+		// upload was in progress. Recompute the key now that
+		// the upload has completed.
+		ks.invalidateAfterUpload = false
+		if invalidatedValueState := ks.valueState.invalidate(); invalidatedValueState != nil {
+			ks.valueState = invalidatedValueState
+			rc.enqueueForEvaluation(ks)
+		} else {
+			rc.completedKeys.pushLast(ks)
+		}
+	} else {
+		rc.completedKeys.pushLast(ks)
+	}
 	rc.lock.Unlock()
 	return true, nil
 }
@@ -351,6 +368,75 @@ func (rc *RecursiveComputer[TReference, TMetadata]) forceUnblockKeyState(ks *Key
 	rc.blockedKeys.remove(ks)
 }
 
+// tryInvalidateKeyStateLocked discards the value of a key whose cached
+// results reference objects that are no longer present in storage, so
+// that the key is recomputed without consulting the cache. The caller
+// must hold rc.lock. Returns true if the key is (now) unevaluated,
+// meaning the caller may treat it as a missing dependency.
+func (rc *RecursiveComputer[TReference, TMetadata]) tryInvalidateKeyStateLocked(ks *KeyState[TReference, TMetadata]) bool {
+	if !ks.valueState.isEvaluated() {
+		// Another goroutine already invalidated this key.
+		return true
+	}
+	if ks.cacheInvalidations >= maximumMissingObjectRetries {
+		return false
+	}
+	newValueState := ks.valueState.invalidate()
+	if newValueState == nil {
+		return false
+	}
+	switch ks.containingList {
+	case &rc.uploadingKeys:
+		// An upload of the current value state is in flight.
+		// Defer the invalidation until it completes, as the
+		// upload was launched against a snapshot of the value
+		// state that may not be discarded underneath it.
+		ks.invalidateAfterUpload = true
+		ks.cacheInvalidations++
+		return true
+	case &rc.evaluatedKeys, &rc.completedKeys:
+		ks.containingList.remove(ks)
+		ks.valueState = newValueState
+		ks.cacheInvalidations++
+		rc.enqueueForEvaluation(ks)
+		return true
+	default:
+		return false
+	}
+}
+
+func (rc *RecursiveComputer[TReference, TMetadata]) tryInvalidateKeyState(ks *KeyState[TReference, TMetadata]) bool {
+	rc.lock.Lock()
+	defer rc.lock.Unlock()
+
+	return rc.tryInvalidateKeyStateLocked(ks)
+}
+
+// invalidateConsumedDependencies is called when evaluation of a key
+// failed with an error indicating a missing object in storage that
+// cannot be attributed to reading the value of a single dependency.
+// Invalidate all dependencies whose values were consumed during this
+// evaluation attempt, returning the ones that need to be recomputed so
+// that the current key can be retried once they are available again.
+func (rc *RecursiveComputer[TReference, TMetadata]) invalidateConsumedDependencies(e *recursivelyComputingEnvironment[TReference, TMetadata], ks *KeyState[TReference, TMetadata]) []*KeyState[TReference, TMetadata] {
+	rc.lock.Lock()
+	defer rc.lock.Unlock()
+
+	if ks.missingObjectRetries >= maximumMissingObjectRetries {
+		return nil
+	}
+	var invalidated []*KeyState[TReference, TMetadata]
+	for ksDep := range e.consumedDependencies {
+		if rc.tryInvalidateKeyStateLocked(ksDep) {
+			invalidated = append(invalidated, ksDep)
+		}
+	}
+	if len(invalidated) > 0 {
+		ks.missingObjectRetries++
+	}
+	return invalidated
+}
+
 func (rc *RecursiveComputer[TReference, TMetadata]) getOrCreateKeyStateLocked(keyReference object.LocalReference, keyMessageFetcher messageFetcher[TReference, TMetadata], keyTypeURL string, initialValueState valueState[TReference, TMetadata], evaluationQueue *RecursiveComputerEvaluationQueue[TReference, TMetadata]) *KeyState[TReference, TMetadata] {
 	ks, ok := rc.keys[keyReference]
 	if !ok {
@@ -380,6 +466,7 @@ func (rc *RecursiveComputer[TReference, TMetadata]) newEnvironment(ctx context.C
 
 		missingDependencies:        map[*KeyState[TReference, TMetadata]]struct{}{},
 		directVariableDependencies: map[*KeyState[TReference, TMetadata]]struct{}{},
+		consumedDependencies:       map[*KeyState[TReference, TMetadata]]struct{}{},
 	}
 }
 
@@ -459,10 +546,13 @@ func (rc *RecursiveComputer[TReference, TMetadata]) OverrideKeyState(keyReferenc
 // evaluated, any errors evaluating the key are returned.
 func (rc *RecursiveComputer[TReference, TMetadata]) WaitForEvaluation(ctx context.Context, ks *KeyState[TReference, TMetadata]) error {
 	rc.lock.Lock()
-	if !ks.valueState.isEvaluated() {
+	for !ks.valueState.isEvaluated() {
 		// Key has not finished evaluating. Wait for it to
 		// finish. As we only tend to wait on a very small
 		// number of keys, a channel is not created by default.
+		// The key may have become unevaluated again if its
+		// cached value got invalidated, in which case another
+		// round of waiting is needed.
 		if ks.evaluatedWait == nil {
 			ks.evaluatedWait = make(chan struct{})
 		}
@@ -819,9 +909,17 @@ type recursivelyComputingEnvironment[TReference object.BasicReference, TMetadata
 	context  context.Context
 	keyState *KeyState[TReference, TMetadata]
 
-	err                        error
-	missingDependencies        map[*KeyState[TReference, TMetadata]]struct{}
+	err                 error
+	missingDependencies map[*KeyState[TReference, TMetadata]]struct{}
+	// Dependencies whose values were observed during the current
+	// evaluation attempt and turned out to be variable.
 	directVariableDependencies map[*KeyState[TReference, TMetadata]]struct{}
+	// All dependencies whose values were observed during the
+	// current evaluation attempt, regardless of whether they are
+	// variable. These are the dependencies that need to be
+	// invalidated if evaluation fails due to objects being missing
+	// from storage.
+	consumedDependencies map[*KeyState[TReference, TMetadata]]struct{}
 }
 
 func (e *recursivelyComputingEnvironment[TReference, TMetadata]) setError(err error) {
@@ -852,7 +950,7 @@ func (e *recursivelyComputingEnvironment[TReference, TMetadata]) ReferenceObject
 	return e.computer.objectManager.ReferenceObject(capturedObject)
 }
 
-func (e *recursivelyComputingEnvironment[TReference, TMetadata]) getValueState(patchedKey model_core.PatchedMessage[proto.Message, TMetadata], initialValueState valueState[TReference, TMetadata]) valueState[TReference, TMetadata] {
+func (e *recursivelyComputingEnvironment[TReference, TMetadata]) getValueState(patchedKey model_core.PatchedMessage[proto.Message, TMetadata], initialValueState valueState[TReference, TMetadata]) (*KeyState[TReference, TMetadata], valueState[TReference, TMetadata]) {
 	rc := e.computer
 	key, err := model_core.MarshalTopLevelAny(model_core.Unpatch(rc.objectManager, patchedKey))
 	if err != nil {
@@ -874,7 +972,7 @@ func (e *recursivelyComputingEnvironment[TReference, TMetadata]) getValueState(p
 	ks := rc.getOrCreateKeyStateLocked(keyReference, keyMessageFetcher, key.Message.TypeUrl, initialValueState, evaluationQueue)
 	if !ks.valueState.isEvaluated() {
 		e.missingDependencies[ks] = struct{}{}
-		return nil
+		return ks, nil
 	}
 	if err := ks.valueState.getError(); err != nil {
 		// In case of failures we always assume that the
@@ -886,21 +984,33 @@ func (e *recursivelyComputingEnvironment[TReference, TMetadata]) getValueState(p
 			KeyState: ks,
 			Err:      err,
 		})
-		return nil
+		return ks, nil
 	}
 	if ks.valueState.isVariableDependency() {
 		e.directVariableDependencies[ks] = struct{}{}
 	}
-	return ks.valueState
+	e.consumedDependencies[ks] = struct{}{}
+	return ks, ks.valueState
 }
 
 func (e *recursivelyComputingEnvironment[TReference, TMetadata]) GetMessageValue(patchedKey model_core.PatchedMessage[proto.Message, TMetadata]) model_core.Message[proto.Message, TReference] {
-	vs := e.getValueState(patchedKey, initialMessageValueState[TReference, TMetadata]{})
+	ks, vs := e.getValueState(patchedKey, initialMessageValueState[TReference, TMetadata]{})
 	if vs == nil {
 		return model_core.Message[proto.Message, TReference]{}
 	}
 	anyValue, err := vs.getMessageValue(e.context, e.computer)
 	if err != nil {
+		if isMissingObjectError(err) && e.computer.tryInvalidateKeyState(ks) {
+			// The value of this dependency was served from
+			// the cache, but objects it references are no
+			// longer present in storage. The dependency has
+			// been scheduled for recomputation, so report
+			// it as missing to retry the current key later.
+			delete(e.directVariableDependencies, ks)
+			delete(e.consumedDependencies, ks)
+			e.missingDependencies[ks] = struct{}{}
+			return model_core.Message[proto.Message, TReference]{}
+		}
 		e.setError(err)
 		return model_core.Message[proto.Message, TReference]{}
 	}
@@ -913,7 +1023,7 @@ func (e *recursivelyComputingEnvironment[TReference, TMetadata]) GetMessageValue
 }
 
 func (e *recursivelyComputingEnvironment[TReference, TMetadata]) GetNativeValue(patchedKey model_core.PatchedMessage[proto.Message, TMetadata]) (any, bool) {
-	vs := e.getValueState(patchedKey, &computingNativeValueState[TReference, TMetadata]{})
+	_, vs := e.getValueState(patchedKey, &computingNativeValueState[TReference, TMetadata]{})
 	if vs == nil {
 		return nil, false
 	}
@@ -952,7 +1062,21 @@ func (g *variableDependenciesGatherer[TReference, TMetadata]) gatherDependencies
 				g.hoistedVariableDependencies[ksDep] = struct{}{}
 			}
 		} else if cmp > 0 {
-			if ksDep.isLookup /* TODO: || ksDep.value.getError() != nil */ {
+			if !ksDep.valueState.isEvaluated() {
+				// The dependency was invalidated after this
+				// key consumed it (e.g. because objects
+				// referenced by its cached value went missing
+				// from storage). Its hoisted frontier is no
+				// longer available, so nesting it would
+				// silently drop transitive variable
+				// dependencies from the graphlet, causing
+				// stale cache hits. Hoist it instead; its
+				// dependencies hash record is preserved
+				// separately.
+				if g.hoistedVariableDependencies != nil {
+					g.hoistedVariableDependencies[ksDep] = struct{}{}
+				}
+			} else if ksDep.isLookup /* TODO: || ksDep.value.getError() != nil */ {
 				// Keys that only have acyclic dependencies
 				// and only look up data within their parents
 				// are better hoisted, as they mostly just
@@ -1037,6 +1161,7 @@ func (ksl *keyStateList[TReference, TMetadata]) pushLast(ks *KeyState[TReference
 	ks.nextKey = &ksl.head
 	ks.previousKey.nextKey = ks
 	ks.nextKey.previousKey = ks
+	ks.containingList = ksl
 	ksl.count++
 }
 
@@ -1049,6 +1174,7 @@ func (ksl *keyStateList[TReference, TMetadata]) remove(ks *KeyState[TReference, 
 	ks.nextKey.previousKey = ks.previousKey
 	ks.previousKey = nil
 	ks.nextKey = nil
+	ks.containingList = nil
 	ksl.count--
 }
 
@@ -1106,6 +1232,23 @@ type KeyState[TReference object.BasicReference, TMetadata model_core.ReferenceMe
 	evaluationQueue *RecursiveComputerEvaluationQueue[TReference, TMetadata]
 	evaluatedWait   chan struct{}
 	valueState      valueState[TReference, TMetadata]
+
+	// The keyStateList in which this key is currently contained,
+	// which determines whether its value state may be invalidated
+	// when objects referenced by cached results turn out to be
+	// missing from storage.
+	containingList *keyStateList[TReference, TMetadata]
+
+	// Set if invalidation of this key was requested while an upload
+	// of its results was in progress.
+	invalidateAfterUpload bool
+
+	// The number of times the cached value of this key was
+	// invalidated, and the number of times evaluation of this key
+	// was retried after invalidating consumed dependencies. Both
+	// are bounded to guarantee termination.
+	cacheInvalidations   uint32
+	missingObjectRetries uint32
 
 	firstEvaluationStart   time.Time
 	currentEvaluationStart time.Time
@@ -1220,6 +1363,14 @@ type valueState[TReference object.BasicReference, TMetadata model_core.Reference
 	// one.
 	getDependenciesHashRecordReference() object.LocalReference
 
+	// Return a fresh value state that recomputes the key without
+	// consulting the cache, or nil if the value belonging to this
+	// state does not depend on objects in storage (or the key
+	// cannot be recomputed). This is invoked when objects
+	// referenced by cached evaluation results are no longer present
+	// in storage.
+	invalidate() valueState[TReference, TMetadata]
+
 	// Returns true if the value state is an
 	// injectedMessageValueState, or transitively depends on at
 	// least one injectedMessageValueState.
@@ -1264,10 +1415,29 @@ func (unevaluatedValueState[TReference, TMetadata]) isVariableDependency() bool 
 	panic("key has not finished evaluating")
 }
 
+func (unevaluatedValueState[TReference, TMetadata]) invalidate() valueState[TReference, TMetadata] {
+	return nil
+}
+
 type computingValueState[TReference object.BasicReference, TMetadata model_core.ReferenceMetadata] struct {
 	unevaluatedValueState[TReference, TMetadata]
 
 	previousDirectVariableDependencies []*KeyState[TReference, TMetadata]
+
+	// If the key is being recomputed because its cached value
+	// referenced objects that are missing from storage, this field
+	// holds the dependencies hash record reference of the
+	// invalidated value state. Keys that consumed the previous
+	// value may still request it while uploading their own results.
+	previousDependenciesHashRecordReference object.LocalReference
+}
+
+func (vs *computingValueState[TReference, TMetadata]) getDependenciesHashRecordReference() object.LocalReference {
+	var badReference object.LocalReference
+	if vs.previousDependenciesHashRecordReference == badReference {
+		panic("key has not finished evaluating")
+	}
+	return vs.previousDependenciesHashRecordReference
 }
 
 func (computingValueState[TReference, TMetadata]) disableCacheLookup() valueState[TReference, TMetadata] {
@@ -1301,6 +1471,13 @@ func (evaluatedValueState[TReference, TMetadata]) disableCacheLookup() valueStat
 
 func (evaluatedValueState[TReference, TMetadata]) gotFailedDependency(err NestedError[TReference, TMetadata]) valueState[TReference, TMetadata] {
 	panic("key already evaluated")
+}
+
+func (evaluatedValueState[TReference, TMetadata]) invalidate() valueState[TReference, TMetadata] {
+	// By default, evaluated keys hold their values in memory, in
+	// which case there is nothing to invalidate. Value states that
+	// serve their value from storage override this method.
+	return nil
 }
 
 type earlyFailedValueState[TReference object.BasicReference, TMetadata model_core.ReferenceMetadata] struct {
@@ -1545,7 +1722,7 @@ func (vs initialMessageValueState[TReference, TMetadata]) evaluate(ctx context.C
 
 	rootLookupResult, err := rc.lookupResultReader.ReadObject(ctx, rootLookupResultReference)
 	if err != nil {
-		if status.Code(err) != codes.NotFound {
+		if !isMissingObjectError(err) {
 			return &earlyFailedValueState[TReference, TMetadata]{
 				err: err,
 			}, nil
@@ -1581,8 +1758,11 @@ func (vs initialMessageValueState[TReference, TMetadata]) evaluate(ctx context.C
 			dependencyKeyReferences = append(dependencyKeyReferences, dependencyKeyReference)
 		}
 		if errIter != nil {
+			if isMissingObjectError(errIter) {
+				return (&computingMessageValueState[TReference, TMetadata]{}).evaluate(ctx, rc, ks)
+			}
 			return &earlyFailedValueState[TReference, TMetadata]{
-				err: err,
+				err: errIter,
 			}, nil
 		}
 		if len(dependencyKeyReferences) == 0 {
@@ -1661,8 +1841,11 @@ func (vs initialMessageValueState[TReference, TMetadata]) evaluate(ctx context.C
 				i++
 			}
 			if errIter != nil {
+				if isMissingObjectError(errIter) {
+					return (&computingMessageValueState[TReference, TMetadata]{}).evaluate(ctx, rc, ks)
+				}
 				return &earlyFailedValueState[TReference, TMetadata]{
-					err: err,
+					err: errIter,
 				}, nil
 			}
 			if len(missingDependencyIndices) != 0 {
@@ -1683,7 +1866,7 @@ func (vs initialMessageValueState[TReference, TMetadata]) evaluate(ctx context.C
 			DependenciesHash: dependenciesHash[:],
 		})
 		if err != nil {
-			if status.Code(err) != codes.NotFound {
+			if !isMissingObjectError(err) {
 				return &earlyFailedValueState[TReference, TMetadata]{
 					err: err,
 				}, nil
@@ -1692,7 +1875,7 @@ func (vs initialMessageValueState[TReference, TMetadata]) evaluate(ctx context.C
 		}
 		subsequentLookupResultReference, err := model_tag.ResolveDecodableTag(ctx, rc.tagStore, subsequentTagKeyHash)
 		if err != nil {
-			if status.Code(err) != codes.NotFound {
+			if !isMissingObjectError(err) {
 				return &earlyFailedValueState[TReference, TMetadata]{
 					err: err,
 				}, nil
@@ -1701,7 +1884,7 @@ func (vs initialMessageValueState[TReference, TMetadata]) evaluate(ctx context.C
 		}
 		subsequentLookupResult, err := rc.lookupResultReader.ReadObject(ctx, subsequentLookupResultReference)
 		if err != nil {
-			if status.Code(err) != codes.NotFound {
+			if !isMissingObjectError(err) {
 				return &earlyFailedValueState[TReference, TMetadata]{
 					err: err,
 				}, nil
@@ -1714,9 +1897,12 @@ func (vs initialMessageValueState[TReference, TMetadata]) evaluate(ctx context.C
 		}
 		evaluation, err := GraphletGetEvaluation(ctx, rc.evaluationReader, model_core.Nested(subsequentLookupResult, hitGraphlet.HitGraphlet))
 		if err != nil {
-			return &earlyFailedValueState[TReference, TMetadata]{
-				err: err,
-			}, nil
+			if !isMissingObjectError(err) {
+				return &earlyFailedValueState[TReference, TMetadata]{
+					err: err,
+				}, nil
+			}
+			return (&computingMessageValueState[TReference, TMetadata]{}).evaluate(ctx, rc, ks)
 		}
 		value, err := model_core.FlattenAny(model_core.Nested(evaluation, evaluation.Message.Value))
 		if err != nil {
@@ -1785,6 +1971,17 @@ func (vs *computingMessageValueState[TReference, TMetadata]) evaluate(ctx contex
 			}
 			vs.previousDirectVariableDependencies = sortedKeyStates(e.directVariableDependencies)
 			return vs, missingDependencies
+		}
+		if status.Code(err) == codes.FailedPrecondition {
+			// The compute function may have dereferenced
+			// objects belonging to the value of a cached
+			// dependency that are no longer present in
+			// storage. Invalidate the dependencies whose
+			// values were consumed and retry.
+			if invalidated := rc.invalidateConsumedDependencies(e, ks); len(invalidated) > 0 {
+				vs.previousDirectVariableDependencies = sortedKeyStates(e.directVariableDependencies)
+				return vs, invalidated
+			}
 		}
 		return &evaluationFailedValueState[TReference, TMetadata]{
 			err:                        err,
@@ -2146,6 +2343,10 @@ func (vs *noDependenciesUploadedMessageValueState[TReference, TMetadata]) upload
 	return vs, nil
 }
 
+func (vs *noDependenciesUploadedMessageValueState[TReference, TMetadata]) invalidate() valueState[TReference, TMetadata] {
+	return &computingMessageValueState[TReference, TMetadata]{}
+}
+
 func (vs *noDependenciesUploadedMessageValueState[TReference, TMetadata]) getMessageValue(ctx context.Context, rc *RecursiveComputer[TReference, TMetadata]) (model_core.TopLevelMessage[*anypb.Any, TReference], error) {
 	rootLookupResult, err := rc.lookupResultReader.ReadObject(ctx, vs.hitValueLookupResultReference)
 	if err != nil {
@@ -2177,6 +2378,14 @@ type variableDependenciesUploadedMessageValueState[TReference object.BasicRefere
 
 func (vs *variableDependenciesUploadedMessageValueState[TReference, TMetadata]) upload(ctx context.Context, rc *RecursiveComputer[TReference, TMetadata], ks *KeyState[TReference, TMetadata]) (valueState[TReference, TMetadata], error) {
 	return vs, nil
+}
+
+func (vs *variableDependenciesUploadedMessageValueState[TReference, TMetadata]) invalidate() valueState[TReference, TMetadata] {
+	return &computingMessageValueState[TReference, TMetadata]{
+		computingValueState: computingValueState[TReference, TMetadata]{
+			previousDependenciesHashRecordReference: vs.dependenciesHashRecordReference,
+		},
+	}
 }
 
 func (vs *variableDependenciesUploadedMessageValueState[TReference, TMetadata]) getMessageValue(ctx context.Context, rc *RecursiveComputer[TReference, TMetadata]) (model_core.TopLevelMessage[*anypb.Any, TReference], error) {
@@ -2288,6 +2497,17 @@ func (vs *computingNativeValueState[TReference, TMetadata]) evaluate(ctx context
 			}
 			vs.previousDirectVariableDependencies = sortedKeyStates(e.directVariableDependencies)
 			return vs, missingDependencies
+		}
+		if status.Code(err) == codes.FailedPrecondition {
+			// The compute function may have dereferenced
+			// objects belonging to the value of a cached
+			// dependency that are no longer present in
+			// storage. Invalidate the dependencies whose
+			// values were consumed and retry.
+			if invalidated := rc.invalidateConsumedDependencies(e, ks); len(invalidated) > 0 {
+				vs.previousDirectVariableDependencies = sortedKeyStates(e.directVariableDependencies)
+				return vs, invalidated
+			}
 		}
 		return &evaluationFailedValueState[TReference, TMetadata]{
 			err:                        err,
@@ -2405,6 +2625,28 @@ func (vs *variableDependenciesMarshaledNativeValueState[TReference, TMetadata]) 
 
 func (vs *variableDependenciesMarshaledNativeValueState[TReference, TMetadata]) getGraphlet(ctx context.Context, rc *RecursiveComputer[TReference, TMetadata], ks *KeyState[TReference, TMetadata]) (valueState[TReference, TMetadata], model_core.Message[*model_evaluation_pb.Graphlet, TReference], error) {
 	return vs, vs.graphlet, nil
+}
+
+// maximumMissingObjectRetries bounds both the number of times the
+// cached value of a key may be invalidated and the number of times
+// evaluation of a key is retried after invalidating its consumed
+// dependencies, guaranteeing termination if storage keeps losing
+// objects.
+const maximumMissingObjectRetries = 3
+
+// isMissingObjectError returns true for errors indicating that an
+// object referenced by cached evaluation results is no longer present
+// in storage. Storage backends that are expected to hold all referenced
+// objects report missing ones as FAILED_PRECONDITION (see
+// pkg/storage/object/existenceprecondition), while tag resolution and
+// flaky reads report NOT_FOUND.
+func isMissingObjectError(err error) bool {
+	switch status.Code(err) {
+	case codes.NotFound, codes.FailedPrecondition:
+		return true
+	default:
+		return false
+	}
 }
 
 // NestedError is used to wrap errors that occurred while evaluating a
