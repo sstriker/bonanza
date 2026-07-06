@@ -52,6 +52,17 @@ bazel_py_fragment = rule(
     needs = [],
 )
 
+def _coverage_fragment_impl(ctx):
+    # None of the coverage fragment's fields are exposed to Starlark
+    # rules; declaring fragments = ["coverage"] merely permits the use
+    # of coverage related configuration fields.
+    return [FragmentInfo()]
+
+coverage_fragment = rule(
+    _coverage_fragment_impl,
+    needs = [],
+)
+
 def _configuration_fragment_impl(ctx):
     has_separate_genfiles_directory = not ctx.attr._merge_genfiles_directory[BuildSettingInfo].value
     is_exec_configuration = ctx.attr._is_exec_configuration[BuildSettingInfo].value
