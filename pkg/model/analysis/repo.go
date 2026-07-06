@@ -2227,7 +2227,7 @@ func (mrc *moduleOrRepositoryContext[TReference, TMetadata]) doFile(thread *star
 	return starlark.None, nil
 }
 
-func (moduleOrRepositoryContext[TReference, TMetadata]) doGetenv(thread *starlark.Thread, b *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
+func (mrc *moduleOrRepositoryContext[TReference, TMetadata]) doGetenv(thread *starlark.Thread, b *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
 	var name string
 	var defaultValue *string
 	if err := starlark.UnpackArgs(
@@ -2238,7 +2238,15 @@ func (moduleOrRepositoryContext[TReference, TMetadata]) doGetenv(thread *starlar
 		return nil, err
 	}
 
-	// TODO: Provide a real implementation!
+	mrc.maybeGetRepoPlatform()
+	if !mrc.repoPlatform.IsSet() {
+		return nil, evaluation.ErrMissingDependency
+	}
+	for _, entry := range mrc.repoPlatform.Message.RepositoryOsEnviron {
+		if entry.Name == name {
+			return starlark.String(entry.Value), nil
+		}
+	}
 	if defaultValue == nil {
 		return starlark.None, nil
 	}
