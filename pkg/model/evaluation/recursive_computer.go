@@ -567,12 +567,31 @@ func (rc *RecursiveComputer[TReference, TMetadata]) getEvaluationsForSortedList(
 	defer evaluationsBuilder.Discard()
 
 	for _, ks := range sortedKeyStates {
-		evaluations, err := model_core.BuildPatchedMessage(func(patcher *model_core.ReferenceMessagePatcher[TMetadata]) (*model_evaluation_pb.Evaluations, error) {
-			newValueState, graphlet, err := ks.valueState.getGraphlet(ctx, rc, ks)
-			ks.valueState = newValueState
-			if err != nil {
-				return nil, err
+		// This method may be called by multiple goroutines
+		// concurrently, both for uploading graphlets of parents
+		// sharing nested dependencies and for returning
+		// evaluation results at the end of the build. Snapshot
+		// the value state and only install the new one if no
+		// other goroutine transitioned it in the meantime.
+		// Graphlets are constructed deterministically, so a
+		// locally computed graphlet remains usable even if the
+		// write-back is discarded.
+		rc.lock.RLock()
+		vs := ks.valueState
+		rc.lock.RUnlock()
+		newValueState, graphlet, err := vs.getGraphlet(ctx, rc, ks)
+		if err != nil {
+			return model_core.PatchedMessage[[]*model_evaluation_pb.Evaluations, TMetadata]{}, err
+		}
+		if newValueState != vs {
+			rc.lock.Lock()
+			if ks.valueState == vs {
+				ks.valueState = newValueState
 			}
+			rc.lock.Unlock()
+		}
+
+		evaluations := model_core.MustBuildPatchedMessage(func(patcher *model_core.ReferenceMessagePatcher[TMetadata]) *model_evaluation_pb.Evaluations {
 			return &model_evaluation_pb.Evaluations{
 				Level: &model_evaluation_pb.Evaluations_Leaf_{
 					Leaf: &model_evaluation_pb.Evaluations_Leaf{
@@ -580,11 +599,8 @@ func (rc *RecursiveComputer[TReference, TMetadata]) getEvaluationsForSortedList(
 						Graphlet:     model_core.Patch(rc.objectManager, graphlet).Merge(patcher),
 					},
 				},
-			}, nil
+			}
 		})
-		if err != nil {
-			return model_core.PatchedMessage[[]*model_evaluation_pb.Evaluations, TMetadata]{}, err
-		}
 		if err := evaluationsBuilder.PushChild(evaluations); err != nil {
 			return model_core.PatchedMessage[[]*model_evaluation_pb.Evaluations, TMetadata]{}, err
 		}
@@ -667,16 +683,18 @@ func gatherTopLevelKeyStates[TReference object.BasicReference, TMetadata model_c
 // dependencies.
 func (rc *RecursiveComputer[TReference, TMetadata]) GetEvaluations(ctx context.Context, keyStates []*KeyState[TReference, TMetadata]) (model_core.PatchedMessage[[]*model_evaluation_pb.Evaluations, TMetadata], error) {
 	rc.lock.Lock()
-	defer rc.lock.Unlock()
-
 	topLevelKeyStates := map[*KeyState[TReference, TMetadata]]struct{}{}
 	for _, ks := range keyStates {
 		if ks.valueState.isEvaluated() && (ks.valueState.getError() != nil || ks.valueState.isVariableDependency()) {
 			gatherTopLevelKeyStates(topLevelKeyStates, ks)
 		}
 	}
+	sortedTopLevelKeyStates := sortedKeyStates(topLevelKeyStates)
+	rc.lock.Unlock()
 
-	return rc.getEvaluationsForSortedList(ctx, sortedKeyStates(topLevelKeyStates))
+	// getEvaluationsForSortedList() acquires rc.lock internally, so
+	// it must be called without holding it.
+	return rc.getEvaluationsForSortedList(ctx, sortedTopLevelKeyStates)
 }
 
 func (rc *RecursiveComputer[TReference, TMetadata]) getCacheLookupTagKeyHash(ks *KeyState[TReference, TMetadata], subsequentLookup *model_evaluation_cache_pb.LookupTagKeyData_SubsequentLookup) (model_tag.DecodableKeyHash, error) {
@@ -972,7 +990,10 @@ func (e *recursivelyComputingEnvironment[TReference, TMetadata]) getVariableDepe
 		hoistedVariableDependencies: map[*KeyState[TReference, TMetadata]]struct{}{},
 		nestedVariableDependencies:  map[*KeyState[TReference, TMetadata]]struct{}{},
 	}
+	rc := e.computer
+	rc.lock.RLock()
 	gatherer.gatherDependencies(directVariableDependencies)
+	rc.lock.RUnlock()
 	hoistedVariableDependencies := sortedKeyStates(gatherer.hoistedVariableDependencies)
 	if len(hoistedVariableDependencies) == 0 {
 		panic("key does not have any hoisted variable dependencies")
@@ -1428,16 +1449,25 @@ func (vs *variableDependenciesComputedValueState[TReference, TMetadata]) buildGr
 	inlineCandidates = append(inlineCandidates, graphletEvaluation)
 
 	// Attach evaluations of direct and transitive dependencies that
-	// did not get hoisted to the parent.
+	// did not get hoisted to the parent. Gathering traverses the
+	// value states of dependencies, which other goroutines may
+	// transition concurrently. The lock must be released before
+	// calling getEvaluationsForSortedList(), as it acquires it
+	// internally.
 	gatherer := variableDependenciesGatherer[TReference, TMetadata]{
 		keyRawReference:            ks.keyReference.GetRawReference(),
 		nestedVariableDependencies: map[*KeyState[TReference, TMetadata]]struct{}{},
 	}
+	rc.lock.RLock()
 	gatherer.gatherDependencies(vs.directVariableDependencies)
+	rc.lock.RUnlock()
 	nestedVariableDependencies := sortedKeyStates(gatherer.nestedVariableDependencies)
 
 	evaluationsParentNodeComputer := rc.getEvaluationsParentNodeComputer(ctx)
 	dependencyEvaluationsList, err := rc.getEvaluationsForSortedList(ctx, nestedVariableDependencies)
+	if err != nil {
+		return variableDependenciesMarshaledValueState[TReference, TMetadata]{}, model_core.Message[*model_evaluation_pb.Graphlet, TReference]{}, err
+	}
 	inlineCandidates = append(inlineCandidates, inlinedtree.Candidate[*model_evaluation_pb.Graphlet, TMetadata]{
 		ExternalMessage: model_core.ProtoListToBinaryMarshaler(dependencyEvaluationsList),
 		Encoder:         rc.cacheDeterministicEncoder,
