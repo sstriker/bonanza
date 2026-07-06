@@ -289,7 +289,7 @@ func (pcp pathComponentParser) ParseFirstComponent(componentWalker bb_path.Compo
 	if err != nil || r == nil {
 		return nil, nil, err
 	}
-	return r, nil, nil
+	return *r, nil, nil
 }
 
 // PathResolver can be used in conjunction with path.Resolve() to
