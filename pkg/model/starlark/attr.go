@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"maps"
 	"slices"
+	"sort"
 	"strings"
 
 	pg_label "bonanza.build/pkg/label"
@@ -242,23 +243,41 @@ func (intListAttrType[TReference, TMetadata]) IsOutput() (string, bool) {
 	return "", false
 }
 
+// aspectIdentifierStrings converts a list of aspects that are attached
+// to a label attribute to a sorted list of canonical Starlark
+// identifier strings, so that they can be recorded in the attribute's
+// label options.
+func aspectIdentifierStrings[TReference any, TMetadata model_core.ReferenceMetadata](aspects []*Aspect[TReference, TMetadata]) ([]string, error) {
+	identifiers := make([]string, 0, len(aspects))
+	for i, aspect := range aspects {
+		if aspect.Identifier == nil {
+			return nil, fmt.Errorf("aspect at index %d does not have an identifier", i)
+		}
+		identifiers = append(identifiers, aspect.Identifier.String())
+	}
+	sort.Strings(identifiers)
+	return slices.Compact(identifiers), nil
+}
+
 type labelAttrType[TReference any, TMetadata model_core.ReferenceMetadata] struct {
 	allowNone       bool
 	allowSingleFile bool
 	executable      bool
 	valueAllowFiles []byte
 	valueCfg        TransitionDefinition[TReference, TMetadata]
+	valueAspects    []*Aspect[TReference, TMetadata]
 }
 
 // NewLabelAttrType creates a label attribute type. These are normally
 // constructed by calling config.label().
-func NewLabelAttrType[TReference any, TMetadata model_core.ReferenceMetadata](allowNone, allowSingleFile, executable bool, valueAllowFiles []byte, valueCfg TransitionDefinition[TReference, TMetadata]) AttrType[TReference, TMetadata] {
+func NewLabelAttrType[TReference any, TMetadata model_core.ReferenceMetadata](allowNone, allowSingleFile, executable bool, valueAllowFiles []byte, valueCfg TransitionDefinition[TReference, TMetadata], valueAspects []*Aspect[TReference, TMetadata]) AttrType[TReference, TMetadata] {
 	return &labelAttrType[TReference, TMetadata]{
 		allowNone:       allowNone,
 		allowSingleFile: allowSingleFile,
 		executable:      executable,
 		valueAllowFiles: valueAllowFiles,
 		valueCfg:        valueCfg,
+		valueAspects:    valueAspects,
 	}
 }
 
@@ -271,12 +290,17 @@ func (at *labelAttrType[TReference, TMetadata]) Encode(path map[starlark.Value]s
 	if err != nil {
 		return err
 	}
+	aspects, err := aspectIdentifierStrings(at.valueAspects)
+	if err != nil {
+		return err
+	}
 	out.Message.Type = &model_starlark_pb.Attr_Label{
 		Label: &model_starlark_pb.Attr_LabelType{
 			AllowNone:       at.allowNone,
 			AllowSingleFile: at.allowSingleFile,
 			Executable:      at.executable,
 			ValueOptions: &model_starlark_pb.Attr_LabelOptions{
+				Aspects:    aspects,
 				AllowFiles: at.valueAllowFiles,
 				Cfg:        valueCfg.Merge(out.Patcher),
 			},
@@ -300,15 +324,17 @@ func (labelAttrType[TReference, TMetadata]) IsOutput() (string, bool) {
 type labelKeyedStringDictAttrType[TReference any, TMetadata model_core.ReferenceMetadata] struct {
 	dictKeyAllowFiles []byte
 	dictKeyCfg        TransitionDefinition[TReference, TMetadata]
+	dictKeyAspects    []*Aspect[TReference, TMetadata]
 }
 
 // NewLabelKeyedStringDictAttrType creates a dictionary attribute type,
 // where keys are labels and values are strings. These are normally
 // constructed by calling config.string_keyed_label_dict().
-func NewLabelKeyedStringDictAttrType[TReference any, TMetadata model_core.ReferenceMetadata](dictKeyAllowFiles []byte, dictKeyCfg TransitionDefinition[TReference, TMetadata]) AttrType[TReference, TMetadata] {
+func NewLabelKeyedStringDictAttrType[TReference any, TMetadata model_core.ReferenceMetadata](dictKeyAllowFiles []byte, dictKeyCfg TransitionDefinition[TReference, TMetadata], dictKeyAspects []*Aspect[TReference, TMetadata]) AttrType[TReference, TMetadata] {
 	return &labelKeyedStringDictAttrType[TReference, TMetadata]{
 		dictKeyAllowFiles: dictKeyAllowFiles,
 		dictKeyCfg:        dictKeyCfg,
+		dictKeyAspects:    dictKeyAspects,
 	}
 }
 
@@ -321,9 +347,14 @@ func (at *labelKeyedStringDictAttrType[TReference, TMetadata]) Encode(path map[s
 	if err != nil {
 		return err
 	}
+	aspects, err := aspectIdentifierStrings(at.dictKeyAspects)
+	if err != nil {
+		return err
+	}
 	out.Message.Type = &model_starlark_pb.Attr_LabelKeyedStringDict{
 		LabelKeyedStringDict: &model_starlark_pb.Attr_LabelKeyedStringDictType{
 			DictKeyOptions: &model_starlark_pb.Attr_LabelOptions{
+				Aspects:    aspects,
 				AllowFiles: at.dictKeyAllowFiles,
 				Cfg:        dictKeyCfg.Merge(out.Patcher),
 			},
@@ -343,15 +374,17 @@ func (labelKeyedStringDictAttrType[TReference, TMetadata]) IsOutput() (string, b
 type labelListAttrType[TReference any, TMetadata model_core.ReferenceMetadata] struct {
 	listValueAllowFiles []byte
 	listValueCfg        TransitionDefinition[TReference, TMetadata]
+	listValueAspects    []*Aspect[TReference, TMetadata]
 }
 
 // NewLabelListAttrType creates a list attribute type, where elements
 // are labels. These are normally constructed by calling
 // config.label_list().
-func NewLabelListAttrType[TReference any, TMetadata model_core.ReferenceMetadata](listValueAllowFiles []byte, listValueCfg TransitionDefinition[TReference, TMetadata]) AttrType[TReference, TMetadata] {
+func NewLabelListAttrType[TReference any, TMetadata model_core.ReferenceMetadata](listValueAllowFiles []byte, listValueCfg TransitionDefinition[TReference, TMetadata], listValueAspects []*Aspect[TReference, TMetadata]) AttrType[TReference, TMetadata] {
 	return &labelListAttrType[TReference, TMetadata]{
 		listValueAllowFiles: listValueAllowFiles,
 		listValueCfg:        listValueCfg,
+		listValueAspects:    listValueAspects,
 	}
 }
 
@@ -364,9 +397,14 @@ func (at *labelListAttrType[TReference, TMetadata]) Encode(path map[starlark.Val
 	if err != nil {
 		return err
 	}
+	aspects, err := aspectIdentifierStrings(at.listValueAspects)
+	if err != nil {
+		return err
+	}
 	out.Message.Type = &model_starlark_pb.Attr_LabelList{
 		LabelList: &model_starlark_pb.Attr_LabelListType{
 			ListValueOptions: &model_starlark_pb.Attr_LabelOptions{
+				Aspects:    aspects,
 				AllowFiles: at.listValueAllowFiles,
 				Cfg:        listValueCfg.Merge(out.Patcher),
 			},
@@ -534,15 +572,17 @@ func (stringListAttrType[TReference, TMetadata]) IsOutput() (string, bool) {
 type stringKeyedLabelDictAttrType[TReference any, TMetadata model_core.ReferenceMetadata] struct {
 	dictKeyAllowFiles []byte
 	dictValueCfg      TransitionDefinition[TReference, TMetadata]
+	dictValueAspects  []*Aspect[TReference, TMetadata]
 }
 
 // NewStringKeyedLabelDictAttrType creates a dictionary attribute type,
 // where keys are labels and values are strings. These are normally
 // constructed by calling config.string_keyed_label_dict().
-func NewStringKeyedLabelDictAttrType[TReference any, TMetadata model_core.ReferenceMetadata](dictKeyAllowFiles []byte, dictValueCfg TransitionDefinition[TReference, TMetadata]) AttrType[TReference, TMetadata] {
+func NewStringKeyedLabelDictAttrType[TReference any, TMetadata model_core.ReferenceMetadata](dictKeyAllowFiles []byte, dictValueCfg TransitionDefinition[TReference, TMetadata], dictValueAspects []*Aspect[TReference, TMetadata]) AttrType[TReference, TMetadata] {
 	return &stringKeyedLabelDictAttrType[TReference, TMetadata]{
 		dictKeyAllowFiles: dictKeyAllowFiles,
 		dictValueCfg:      dictValueCfg,
+		dictValueAspects:  dictValueAspects,
 	}
 }
 
@@ -555,9 +595,14 @@ func (at *stringKeyedLabelDictAttrType[TReference, TMetadata]) Encode(path map[s
 	if err != nil {
 		return err
 	}
+	aspects, err := aspectIdentifierStrings(at.dictValueAspects)
+	if err != nil {
+		return err
+	}
 	out.Message.Type = &model_starlark_pb.Attr_StringKeyedLabelDict{
 		StringKeyedLabelDict: &model_starlark_pb.Attr_StringKeyedLabelDictType{
 			DictValueOptions: &model_starlark_pb.Attr_LabelOptions{
+				Aspects:    aspects,
 				AllowFiles: at.dictKeyAllowFiles,
 				Cfg:        dictValueCfg.Merge(out.Patcher),
 			},

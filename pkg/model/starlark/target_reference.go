@@ -184,6 +184,15 @@ func (tr *TargetReference[TReference, TMetadata]) Attr(thread *starlark.Thread, 
 
 	if ctr := tr.configured; ctr != nil {
 		switch name {
+		case "actions":
+			// TODO: Provide the actual list of actions
+			// registered by the configured target. An empty
+			// list is provided for now, so that aspects
+			// that inspect target.actions (e.g.
+			// bazel_skylib's unittest.bzl) can at least run.
+			actions := starlark.NewList(nil)
+			actions.Freeze()
+			return actions, nil
 		case "data_runfiles", "default_runfiles", "files", "files_to_run":
 			// Fields provided by DefaultInfo can be accessed directly.
 			defaultInfoProviderValue, err := ctr.getProviderValue(thread, defaultInfoProviderIdentifier)
@@ -204,6 +213,7 @@ var unconfiguredTargetReferenceAttrNames = []string{
 }
 
 var configuredTargetReferenceAttrNames = []string{
+	"actions",
 	"data_runfiles",
 	"default_runfiles",
 	"files",
