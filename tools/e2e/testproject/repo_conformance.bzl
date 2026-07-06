@@ -133,6 +133,10 @@ def _conformance_repo_impl(rctx):
     rctx.report_progress("conformance checks almost done")
     _check(results, "report_progress", True)
 
+    failures = [r for r in results if "=FAIL" in r]
+    if failures:
+        fail("repository_ctx conformance failures:\n" + "\n".join(failures))
+
     rctx.file("results.txt", "\n".join(results) + "\n")
     rctx.file("BUILD.bazel", 'exports_files(["results.txt"], visibility = ["//visibility:public"])\n')
 
