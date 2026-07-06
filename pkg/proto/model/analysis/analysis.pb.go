@@ -1000,6 +1000,7 @@ type TargetActionDefinition struct {
 	InitialOutputDirectory *filesystem.Directory                      `protobuf:"bytes,6,opt,name=initial_output_directory,json=initialOutputDirectory,proto3" json:"initial_output_directory,omitempty"`
 	Env                    []*command.EnvironmentVariableList_Element `protobuf:"bytes,7,rep,name=env,proto3" json:"env,omitempty"`
 	UseDefaultShellEnv     bool                                       `protobuf:"varint,8,opt,name=use_default_shell_env,json=useDefaultShellEnv,proto3" json:"use_default_shell_env,omitempty"`
+	Mnemonic               string                                     `protobuf:"bytes,9,opt,name=mnemonic,proto3" json:"mnemonic,omitempty"`
 	unknownFields          protoimpl.UnknownFields
 	sizeCache              protoimpl.SizeCache
 }
@@ -1088,6 +1089,13 @@ func (x *TargetActionDefinition) GetUseDefaultShellEnv() bool {
 		return x.UseDefaultShellEnv
 	}
 	return false
+}
+
+func (x *TargetActionDefinition) GetMnemonic() string {
+	if x != nil {
+		return x.Mnemonic
+	}
+	return ""
 }
 
 type TargetOutputDefinition struct {
@@ -13547,7 +13555,7 @@ const file_bonanza_build_pkg_proto_model_analysis_analysis_proto_rawDesc = "" +
 	"\x0erunfiles_files\x18\x02 \x03(\v2$.bonanza.model.starlark.List.ElementR\rrunfilesFiles\x12Q\n" +
 	"\x11runfiles_symlinks\x18\x03 \x03(\v2$.bonanza.model.starlark.List.ElementR\x10runfilesSymlinks\x12Z\n" +
 	"\x16runfiles_root_symlinks\x18\x04 \x03(\v2$.bonanza.model.starlark.List.ElementR\x14runfilesRootSymlinksB\a\n" +
-	"\x05level\"\xbd\x04\n" +
+	"\x05level\"\xd9\x04\n" +
 	"\x16TargetActionDefinition\x12<\n" +
 	"\x06inputs\x18\x01 \x03(\v2$.bonanza.model.starlark.List.ElementR\x06inputs\x12@\n" +
 	"\x05tools\x18\x02 \x03(\v2*.bonanza.model.analysis.FilesToRunProviderR\x05tools\x127\n" +
@@ -13556,7 +13564,8 @@ const file_bonanza_build_pkg_proto_model_analysis_analysis_proto_rawDesc = "" +
 	"\x13output_path_pattern\x18\x05 \x01(\v2\".bonanza.model.command.PathPatternR\x11outputPathPattern\x12]\n" +
 	"\x18initial_output_directory\x18\x06 \x01(\v2#.bonanza.model.filesystem.DirectoryR\x16initialOutputDirectory\x12H\n" +
 	"\x03env\x18\a \x03(\v26.bonanza.model.command.EnvironmentVariableList.ElementR\x03env\x121\n" +
-	"\x15use_default_shell_env\x18\b \x01(\bR\x12useDefaultShellEnv\"\xb5\a\n" +
+	"\x15use_default_shell_env\x18\b \x01(\bR\x12useDefaultShellEnv\x12\x1a\n" +
+	"\bmnemonic\x18\t \x01(\tR\bmnemonic\"\xb5\a\n" +
 	"\x16TargetOutputDefinition\x12\x1d\n" +
 	"\taction_id\x18\x02 \x01(\fH\x00R\bactionId\x12h\n" +
 	"\x0fexpand_template\x18\x03 \x01(\v2=.bonanza.model.analysis.TargetOutputDefinition.ExpandTemplateH\x00R\x0eexpandTemplate\x12g\n" +
