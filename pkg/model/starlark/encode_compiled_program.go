@@ -491,7 +491,7 @@ func DecodeValue[TReference object.BasicReference, TMetadata model_core.Referenc
 			if currentIdentifier == nil {
 				return nil, errors.New("encoded aspect does not have a name")
 			}
-			return NewAspect[TReference, TMetadata](currentIdentifier, aspectKind.Definition), nil
+			return NewAspect[TReference, TMetadata](currentIdentifier, NewProtoAspectDefinition[TReference, TMetadata]()), nil
 		default:
 			return nil, errors.New("encoded aspect does not have a reference or definition")
 		}
@@ -753,6 +753,7 @@ func DecodeValue[TReference object.BasicReference, TMetadata model_core.Referenc
 			configuredTargetReference = NewConfiguredTargetReference[TReference, TMetadata](
 				label,
 				model_core.Nested(encodedValue, configured.Providers),
+				/* getActions = */ nil,
 			)
 		}
 		return NewTargetReference[TReference, TMetadata](
@@ -791,6 +792,21 @@ func DecodeValue[TReference object.BasicReference, TMetadata model_core.Referenc
 	}
 }
 
+// decodeAttrAspects reconstructs the list of aspects recorded in the
+// label options of a rule attribute, so that attribute types that are
+// decoded from storage re-encode losslessly.
+func decodeAttrAspects[TReference any, TMetadata model_core.ReferenceMetadata](aspectIdentifiers []string) ([]*Aspect[TReference, TMetadata], error) {
+	aspects := make([]*Aspect[TReference, TMetadata], 0, len(aspectIdentifiers))
+	for _, identifierStr := range aspectIdentifiers {
+		identifier, err := pg_label.NewCanonicalStarlarkIdentifier(identifierStr)
+		if err != nil {
+			return nil, fmt.Errorf("invalid aspect identifier %#v: %w", identifierStr, err)
+		}
+		aspects = append(aspects, NewAspect[TReference, TMetadata](&identifier, nil))
+	}
+	return aspects, nil
+}
+
 // DecodeAttrType extracts the type of a rule attribute from a rule
 // attribute's Protobuf message.
 func DecodeAttrType[TReference object.BasicReference, TMetadata model_core.ReferenceMetadata](attr model_core.Message[*model_starlark_pb.Attr, TReference]) (AttrType[TReference, TMetadata], error) {
@@ -805,6 +821,10 @@ func DecodeAttrType[TReference object.BasicReference, TMetadata model_core.Refer
 		if attrTypeInfo.Label.ValueOptions == nil || attrTypeInfo.Label.ValueOptions.Cfg == nil {
 			return nil, errors.New("missing value options")
 		}
+		aspects, err := decodeAttrAspects[TReference, TMetadata](attrTypeInfo.Label.ValueOptions.Aspects)
+		if err != nil {
+			return nil, err
+		}
 		return NewLabelAttrType[TReference, TMetadata](
 			attrTypeInfo.Label.AllowNone,
 			attrTypeInfo.Label.AllowSingleFile,
@@ -813,26 +833,37 @@ func DecodeAttrType[TReference object.BasicReference, TMetadata model_core.Refer
 			NewProtoTransitionDefinition[TReference, TMetadata](
 				model_core.Nested(attr, attrTypeInfo.Label.ValueOptions.Cfg),
 			),
+			aspects,
 		), nil
 	case *model_starlark_pb.Attr_LabelKeyedStringDict:
 		if attrTypeInfo.LabelKeyedStringDict.DictKeyOptions == nil || attrTypeInfo.LabelKeyedStringDict.DictKeyOptions.Cfg == nil {
 			return nil, errors.New("missing dict key options")
+		}
+		aspects, err := decodeAttrAspects[TReference, TMetadata](attrTypeInfo.LabelKeyedStringDict.DictKeyOptions.Aspects)
+		if err != nil {
+			return nil, err
 		}
 		return NewLabelKeyedStringDictAttrType[TReference, TMetadata](
 			attrTypeInfo.LabelKeyedStringDict.DictKeyOptions.AllowFiles,
 			NewProtoTransitionDefinition[TReference, TMetadata](
 				model_core.Nested(attr, attrTypeInfo.LabelKeyedStringDict.DictKeyOptions.Cfg),
 			),
+			aspects,
 		), nil
 	case *model_starlark_pb.Attr_LabelList:
 		if attrTypeInfo.LabelList.ListValueOptions == nil || attrTypeInfo.LabelList.ListValueOptions.Cfg == nil {
 			return nil, errors.New("missing list value options")
+		}
+		aspects, err := decodeAttrAspects[TReference, TMetadata](attrTypeInfo.LabelList.ListValueOptions.Aspects)
+		if err != nil {
+			return nil, err
 		}
 		return NewLabelListAttrType[TReference, TMetadata](
 			attrTypeInfo.LabelList.ListValueOptions.AllowFiles,
 			NewProtoTransitionDefinition[TReference, TMetadata](
 				model_core.Nested(attr, attrTypeInfo.LabelList.ListValueOptions.Cfg),
 			),
+			aspects,
 		), nil
 	case *model_starlark_pb.Attr_Output:
 		return NewOutputAttrType[TReference, TMetadata](attrTypeInfo.Output.FilenameTemplate), nil
@@ -846,11 +877,16 @@ func DecodeAttrType[TReference object.BasicReference, TMetadata model_core.Refer
 		if attrTypeInfo.StringKeyedLabelDict.DictValueOptions == nil || attrTypeInfo.StringKeyedLabelDict.DictValueOptions.Cfg == nil {
 			return nil, errors.New("missing dict value options")
 		}
+		aspects, err := decodeAttrAspects[TReference, TMetadata](attrTypeInfo.StringKeyedLabelDict.DictValueOptions.Aspects)
+		if err != nil {
+			return nil, err
+		}
 		return NewStringKeyedLabelDictAttrType[TReference, TMetadata](
 			attrTypeInfo.StringKeyedLabelDict.DictValueOptions.AllowFiles,
 			NewProtoTransitionDefinition[TReference, TMetadata](
 				model_core.Nested(attr, attrTypeInfo.StringKeyedLabelDict.DictValueOptions.Cfg),
 			),
+			aspects,
 		), nil
 	case *model_starlark_pb.Attr_StringList:
 		return NewStringListAttrType[TReference, TMetadata](), nil

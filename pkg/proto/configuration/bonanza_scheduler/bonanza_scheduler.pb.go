@@ -28,17 +28,18 @@ const (
 )
 
 type ApplicationConfiguration struct {
-	state                             protoimpl.MessageState                    `protogen:"open.v1"`
-	Global                            *global.Configuration                     `protobuf:"bytes,1,opt,name=global,proto3" json:"global,omitempty"`
-	ClientGrpcServers                 []*grpc.ServerConfiguration               `protobuf:"bytes,3,rep,name=client_grpc_servers,json=clientGrpcServers,proto3" json:"client_grpc_servers,omitempty"`
-	WorkerGrpcServers                 []*grpc.ServerConfiguration               `protobuf:"bytes,4,rep,name=worker_grpc_servers,json=workerGrpcServers,proto3" json:"worker_grpc_servers,omitempty"`
-	BuildQueueStateGrpcServers        []*grpc.ServerConfiguration               `protobuf:"bytes,5,rep,name=build_queue_state_grpc_servers,json=buildQueueStateGrpcServers,proto3" json:"build_queue_state_grpc_servers,omitempty"`
-	PredeclaredPlatformQueues         []*PredeclaredPlatformQueueConfiguration  `protobuf:"bytes,6,rep,name=predeclared_platform_queues,json=predeclaredPlatformQueues,proto3" json:"predeclared_platform_queues,omitempty"`
-	ActionRouter                      *scheduler.ActionRouterConfiguration      `protobuf:"bytes,7,opt,name=action_router,json=actionRouter,proto3" json:"action_router,omitempty"`
-	PreviousExecutionStatsStore       *PreviousExecutionStatsStoreConfiguration `protobuf:"bytes,8,opt,name=previous_execution_stats_store,json=previousExecutionStatsStore,proto3" json:"previous_execution_stats_store,omitempty"`
-	PlatformQueueWithNoWorkersTimeout *durationpb.Duration                      `protobuf:"bytes,9,opt,name=platform_queue_with_no_workers_timeout,json=platformQueueWithNoWorkersTimeout,proto3" json:"platform_queue_with_no_workers_timeout,omitempty"`
-	unknownFields                     protoimpl.UnknownFields
-	sizeCache                         protoimpl.SizeCache
+	state                               protoimpl.MessageState                    `protogen:"open.v1"`
+	Global                              *global.Configuration                     `protobuf:"bytes,1,opt,name=global,proto3" json:"global,omitempty"`
+	ClientGrpcServers                   []*grpc.ServerConfiguration               `protobuf:"bytes,3,rep,name=client_grpc_servers,json=clientGrpcServers,proto3" json:"client_grpc_servers,omitempty"`
+	WorkerGrpcServers                   []*grpc.ServerConfiguration               `protobuf:"bytes,4,rep,name=worker_grpc_servers,json=workerGrpcServers,proto3" json:"worker_grpc_servers,omitempty"`
+	BuildQueueStateGrpcServers          []*grpc.ServerConfiguration               `protobuf:"bytes,5,rep,name=build_queue_state_grpc_servers,json=buildQueueStateGrpcServers,proto3" json:"build_queue_state_grpc_servers,omitempty"`
+	PredeclaredPlatformQueues           []*PredeclaredPlatformQueueConfiguration  `protobuf:"bytes,6,rep,name=predeclared_platform_queues,json=predeclaredPlatformQueues,proto3" json:"predeclared_platform_queues,omitempty"`
+	ActionRouter                        *scheduler.ActionRouterConfiguration      `protobuf:"bytes,7,opt,name=action_router,json=actionRouter,proto3" json:"action_router,omitempty"`
+	PreviousExecutionStatsStore         *PreviousExecutionStatsStoreConfiguration `protobuf:"bytes,8,opt,name=previous_execution_stats_store,json=previousExecutionStatsStore,proto3" json:"previous_execution_stats_store,omitempty"`
+	PlatformQueueWithNoWorkersTimeout   *durationpb.Duration                      `protobuf:"bytes,9,opt,name=platform_queue_with_no_workers_timeout,json=platformQueueWithNoWorkersTimeout,proto3" json:"platform_queue_with_no_workers_timeout,omitempty"`
+	WorkerWithNoSynchronizationsTimeout *durationpb.Duration                      `protobuf:"bytes,10,opt,name=worker_with_no_synchronizations_timeout,json=workerWithNoSynchronizationsTimeout,proto3" json:"worker_with_no_synchronizations_timeout,omitempty"`
+	unknownFields                       protoimpl.UnknownFields
+	sizeCache                           protoimpl.SizeCache
 }
 
 func (x *ApplicationConfiguration) Reset() {
@@ -123,6 +124,13 @@ func (x *ApplicationConfiguration) GetPreviousExecutionStatsStore() *PreviousExe
 func (x *ApplicationConfiguration) GetPlatformQueueWithNoWorkersTimeout() *durationpb.Duration {
 	if x != nil {
 		return x.PlatformQueueWithNoWorkersTimeout
+	}
+	return nil
+}
+
+func (x *ApplicationConfiguration) GetWorkerWithNoSynchronizationsTimeout() *durationpb.Duration {
+	if x != nil {
+		return x.WorkerWithNoSynchronizationsTimeout
 	}
 	return nil
 }
@@ -275,7 +283,7 @@ var File_bonanza_build_pkg_proto_configuration_bonanza_scheduler_bonanza_schedul
 
 const file_bonanza_build_pkg_proto_configuration_bonanza_scheduler_bonanza_scheduler_proto_rawDesc = "" +
 	"\n" +
-	"Obonanza.build/pkg/proto/configuration/bonanza_scheduler/bonanza_scheduler.proto\x12'bonanza.configuration.bonanza_scheduler\x1a?bonanza.build/pkg/proto/configuration/scheduler/scheduler.proto\x1a5bonanza.build/pkg/proto/model/encoding/encoding.proto\x1a3bonanza.build/pkg/proto/storage/object/object.proto\x1aKgithub.com/buildbarn/bb-storage/pkg/proto/configuration/global/global.proto\x1aGgithub.com/buildbarn/bb-storage/pkg/proto/configuration/grpc/grpc.proto\x1a\x1egoogle/protobuf/duration.proto\"\x97\a\n" +
+	"Obonanza.build/pkg/proto/configuration/bonanza_scheduler/bonanza_scheduler.proto\x12'bonanza.configuration.bonanza_scheduler\x1a?bonanza.build/pkg/proto/configuration/scheduler/scheduler.proto\x1a5bonanza.build/pkg/proto/model/encoding/encoding.proto\x1a3bonanza.build/pkg/proto/storage/object/object.proto\x1aKgithub.com/buildbarn/bb-storage/pkg/proto/configuration/global/global.proto\x1aGgithub.com/buildbarn/bb-storage/pkg/proto/configuration/grpc/grpc.proto\x1a\x1egoogle/protobuf/duration.proto\"\x88\b\n" +
 	"\x18ApplicationConfiguration\x12E\n" +
 	"\x06global\x18\x01 \x01(\v2-.buildbarn.configuration.global.ConfigurationR\x06global\x12a\n" +
 	"\x13client_grpc_servers\x18\x03 \x03(\v21.buildbarn.configuration.grpc.ServerConfigurationR\x11clientGrpcServers\x12a\n" +
@@ -284,7 +292,9 @@ const file_bonanza_build_pkg_proto_configuration_bonanza_scheduler_bonanza_sched
 	"\x1bpredeclared_platform_queues\x18\x06 \x03(\v2N.bonanza.configuration.bonanza_scheduler.PredeclaredPlatformQueueConfigurationR\x19predeclaredPlatformQueues\x12_\n" +
 	"\raction_router\x18\a \x01(\v2:.bonanza.configuration.scheduler.ActionRouterConfigurationR\factionRouter\x12\x96\x01\n" +
 	"\x1eprevious_execution_stats_store\x18\b \x01(\v2Q.bonanza.configuration.bonanza_scheduler.PreviousExecutionStatsStoreConfigurationR\x1bpreviousExecutionStatsStore\x12l\n" +
-	"&platform_queue_with_no_workers_timeout\x18\t \x01(\v2\x19.google.protobuf.DurationR!platformQueueWithNoWorkersTimeout\"\x95\x03\n" +
+	"&platform_queue_with_no_workers_timeout\x18\t \x01(\v2\x19.google.protobuf.DurationR!platformQueueWithNoWorkersTimeout\x12o\n" +
+	"'worker_with_no_synchronizations_timeout\x18\n" +
+	" \x01(\v2\x19.google.protobuf.DurationR#workerWithNoSynchronizationsTimeout\"\x95\x03\n" +
 	"%PredeclaredPlatformQueueConfiguration\x12(\n" +
 	"\x10pkix_public_keys\x18\x01 \x03(\fR\x0epkixPublicKeys\x12!\n" +
 	"\fsize_classes\x18\x02 \x03(\rR\vsizeClasses\x12h\n" +
@@ -332,15 +342,16 @@ var file_bonanza_build_pkg_proto_configuration_bonanza_scheduler_bonanza_schedul
 	5,  // 5: bonanza.configuration.bonanza_scheduler.ApplicationConfiguration.action_router:type_name -> bonanza.configuration.scheduler.ActionRouterConfiguration
 	2,  // 6: bonanza.configuration.bonanza_scheduler.ApplicationConfiguration.previous_execution_stats_store:type_name -> bonanza.configuration.bonanza_scheduler.PreviousExecutionStatsStoreConfiguration
 	6,  // 7: bonanza.configuration.bonanza_scheduler.ApplicationConfiguration.platform_queue_with_no_workers_timeout:type_name -> google.protobuf.Duration
-	6,  // 8: bonanza.configuration.bonanza_scheduler.PredeclaredPlatformQueueConfiguration.worker_invocation_stickiness_limits:type_name -> google.protobuf.Duration
-	7,  // 9: bonanza.configuration.bonanza_scheduler.PreviousExecutionStatsStoreConfiguration.grpc_client:type_name -> buildbarn.configuration.grpc.ClientConfiguration
-	8,  // 10: bonanza.configuration.bonanza_scheduler.PreviousExecutionStatsStoreConfiguration.namespace:type_name -> bonanza.storage.object.Namespace
-	9,  // 11: bonanza.configuration.bonanza_scheduler.PreviousExecutionStatsStoreConfiguration.object_encoders:type_name -> bonanza.model.encoding.BinaryEncoder
-	12, // [12:12] is the sub-list for method output_type
-	12, // [12:12] is the sub-list for method input_type
-	12, // [12:12] is the sub-list for extension type_name
-	12, // [12:12] is the sub-list for extension extendee
-	0,  // [0:12] is the sub-list for field type_name
+	6,  // 8: bonanza.configuration.bonanza_scheduler.ApplicationConfiguration.worker_with_no_synchronizations_timeout:type_name -> google.protobuf.Duration
+	6,  // 9: bonanza.configuration.bonanza_scheduler.PredeclaredPlatformQueueConfiguration.worker_invocation_stickiness_limits:type_name -> google.protobuf.Duration
+	7,  // 10: bonanza.configuration.bonanza_scheduler.PreviousExecutionStatsStoreConfiguration.grpc_client:type_name -> buildbarn.configuration.grpc.ClientConfiguration
+	8,  // 11: bonanza.configuration.bonanza_scheduler.PreviousExecutionStatsStoreConfiguration.namespace:type_name -> bonanza.storage.object.Namespace
+	9,  // 12: bonanza.configuration.bonanza_scheduler.PreviousExecutionStatsStoreConfiguration.object_encoders:type_name -> bonanza.model.encoding.BinaryEncoder
+	13, // [13:13] is the sub-list for method output_type
+	13, // [13:13] is the sub-list for method input_type
+	13, // [13:13] is the sub-list for extension type_name
+	13, // [13:13] is the sub-list for extension extendee
+	0,  // [0:13] is the sub-list for field type_name
 }
 
 func init() {

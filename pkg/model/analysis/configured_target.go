@@ -343,6 +343,93 @@ func getAttrValueParts[TReference object.BasicReference, TMetadata model_core.Re
 	return model_core.Nested(namedAttr, []*model_starlark_pb.Value{defaultValue}), true, nil
 }
 
+// decodeSelectGroupsAttrValue resolves a sequence of select() groups
+// that are stored directly on a RuleTarget (i.e., the "features" and
+// "target_compatible_with" common attributes) against a configuration
+// and decodes them to a Starlark value for exposure through ctx.attr.
+func (c *baseComputer[TReference, TMetadata]) decodeSelectGroupsAttrValue(
+	ctx context.Context,
+	e getValueFromSelectGroupEnvironment[TReference, TMetadata],
+	thread *starlark.Thread,
+	selectGroups model_core.Message[[]*model_starlark_pb.Select_Group, TReference],
+	configurationReference model_core.Message[*model_core_pb.DecodableReference, TReference],
+	fromPackage label.CanonicalPackage,
+) (starlark.Value, error) {
+	if len(selectGroups.Message) == 0 {
+		// Value was absent (e.g., message written by an older
+		// version of this code). Present it as an empty list.
+		emptyList := starlark.NewList(nil)
+		emptyList.Freeze()
+		return emptyList, nil
+	}
+	var attrValue starlark.Value
+	missingDependencies := false
+	for _, selectGroup := range selectGroups.Message {
+		valuePart, err := getValueFromSelectGroup(e, configurationReference, fromPackage, selectGroup, false)
+		if err != nil {
+			if errors.Is(err, evaluation.ErrMissingDependency) {
+				// Continue processing the remaining select
+				// groups, so that all dependencies are
+				// requested in a single evaluation round.
+				missingDependencies = true
+				continue
+			}
+			return nil, err
+		}
+		decodedPart, err := model_starlark.DecodeValue[TReference, TMetadata](
+			model_core.Nested(selectGroups, valuePart),
+			/* currentIdentifier = */ nil,
+			c.getValueDecodingOptions(ctx, func(originalLabel label.ResolvedLabel) (starlark.Value, error) {
+				// Leave targets unconfigured, matching the
+				// unconfigured branch of configureAttrValueParts.
+				return model_starlark.NewTargetReference[TReference, TMetadata](
+					originalLabel,
+					/* configured = */ nil,
+				), nil
+			}),
+		)
+		if err != nil {
+			return nil, err
+		}
+		if err := concatenateAttrValueParts(thread, &attrValue, decodedPart); err != nil {
+			return nil, err
+		}
+	}
+	if missingDependencies {
+		return nil, evaluation.ErrMissingDependency
+	}
+	attrValue.Freeze()
+	return attrValue, nil
+}
+
+// newVisibilityAttrValue constructs the value of the "visibility"
+// common attribute that is exposed through ctx.attr, based on the
+// visibility labels that were recorded when the target was declared.
+func newVisibilityAttrValue[TReference object.BasicReference, TMetadata model_core.ReferenceMetadata](targetLabel label.CanonicalLabel, inheritableAttrs *model_starlark_pb.InheritableAttrs) (starlark.Value, error) {
+	visibilityLabels := inheritableAttrs.GetVisibilityLabels()
+	elements := make([]starlark.Value, 0, len(visibilityLabels))
+	if len(visibilityLabels) == 0 {
+		// No visibility was specified. Bazel presents this as
+		// ["//visibility:private"].
+		privateLabel, err := label.NewResolvedLabel(fmt.Sprintf("@@%s//visibility:private", targetLabel.GetCanonicalPackage().GetCanonicalRepo()))
+		if err != nil {
+			return nil, err
+		}
+		elements = append(elements, model_starlark.NewLabel[TReference, TMetadata](privateLabel))
+	} else {
+		for _, visibilityLabel := range visibilityLabels {
+			l, err := label.NewResolvedLabel(visibilityLabel)
+			if err != nil {
+				return nil, fmt.Errorf("invalid visibility label %#v: %w", visibilityLabel, err)
+			}
+			elements = append(elements, model_starlark.NewLabel[TReference, TMetadata](l))
+		}
+	}
+	visibilityList := starlark.NewList(elements)
+	visibilityList.Freeze()
+	return visibilityList, nil
+}
+
 func (c *baseComputer[TReference, TMetadata]) configureAttrValueParts(
 	ctx context.Context,
 	e ConfiguredTargetEnvironment[TReference, TMetadata],
@@ -352,19 +439,21 @@ func (c *baseComputer[TReference, TMetadata]) configureAttrValueParts(
 	configurationReference model_core.Message[*model_core_pb.DecodableReference, TReference],
 	visibilityFromPackage label.CanonicalPackage,
 	execGroupPlatformLabels map[string]string,
+	extraAspectIdentifiers []string,
 ) (starlark.Value, error) {
 	// See if any transitions need to be applied.
-	var cfg *model_starlark_pb.Transition
+	var labelOptions *model_starlark_pb.Attr_LabelOptions
 	isScalar := false
 	switch attrType := namedAttr.Message.Attr.GetType().(type) {
 	case *model_starlark_pb.Attr_Label:
-		cfg = attrType.Label.ValueOptions.GetCfg()
+		labelOptions = attrType.Label.ValueOptions
 		isScalar = true
 	case *model_starlark_pb.Attr_LabelKeyedStringDict:
-		cfg = attrType.LabelKeyedStringDict.DictKeyOptions.GetCfg()
+		labelOptions = attrType.LabelKeyedStringDict.DictKeyOptions
 	case *model_starlark_pb.Attr_LabelList:
-		cfg = attrType.LabelList.ListValueOptions.GetCfg()
+		labelOptions = attrType.LabelList.ListValueOptions
 	}
+	cfg := labelOptions.GetCfg()
 
 	var configurationReferences []model_core.Message[*model_core_pb.DecodableReference, TReference]
 	mayHaveMultipleConfigurations := false
@@ -447,27 +536,29 @@ func (c *baseComputer[TReference, TMetadata]) configureAttrValueParts(
 					return nil, fmt.Errorf("invalid label %#v: %w", resolvedLabelStr, err)
 				}
 
-				// Obtain the providers of the target.
-				patchedConfigurationReference2 := model_core.Patch(e, configurationReference)
-				targetProviders := e.GetTargetProvidersValue(
-					model_core.NewPatchedMessage(
-						&model_analysis_pb.TargetProviders_Key{
-							Label:                  resolvedLabelStr,
-							ConfigurationReference: patchedConfigurationReference2.Message,
-						},
-						patchedConfigurationReference2.Patcher,
-					),
+				// Obtain the providers of the target,
+				// merged with those of any aspects that
+				// this attr requests.
+				providerInstances, err := getTargetProvidersWithAspects(
+					e,
+					resolvedLabelStr,
+					configurationReference,
+					slices.Concat(labelOptions.GetAspects(), extraAspectIdentifiers),
 				)
-				if !targetProviders.IsSet() {
-					missingDependencies = true
-					return starlark.None, nil
+				if err != nil {
+					if errors.Is(err, evaluation.ErrMissingDependency) {
+						missingDependencies = true
+						return starlark.None, nil
+					}
+					return nil, err
 				}
 
 				return model_starlark.NewTargetReference(
 					originalLabel,
 					model_starlark.NewConfiguredTargetReference[TReference, TMetadata](
 						resolvedLabel,
-						model_core.Nested(targetProviders, targetProviders.Message.ProviderInstances),
+						providerInstances,
+						c.newTargetActionsResolver(ctx, e, resolvedLabel, configurationReference),
 					),
 				), nil
 			})
@@ -576,36 +667,63 @@ func (c *baseComputer[TReference, TMetadata]) ComputeConfiguredTargetValue(ctx c
 		)
 	case *model_starlark_pb.Target_Definition_RuleTarget:
 		ruleTarget := targetKind.RuleTarget
-		ruleIdentifier, err := label.NewCanonicalStarlarkIdentifier(ruleTarget.RuleIdentifier)
-		if err != nil {
-			return PatchedConfiguredTargetValue[TMetadata]{}, err
-		}
 
 		allBuiltinsModulesNames := e.GetBuiltinsModuleNamesValue(&model_analysis_pb.BuiltinsModuleNames_Key{})
 		actionEncoder, gotActionEncoder := e.GetActionEncoderObjectValue(&model_analysis_pb.ActionEncoderObject_Key{})
 		directoryCreationParameters, gotDirectoryCreationParameters := e.GetDirectoryCreationParametersObjectValue(&model_analysis_pb.DirectoryCreationParametersObject_Key{})
 		fileCreationParameters, gotFileCreationParameters := e.GetFileCreationParametersObjectValue(&model_analysis_pb.FileCreationParametersObject_Key{})
-		ruleValue := e.GetCompiledBzlFileGlobalValue(&model_analysis_pb.CompiledBzlFileGlobal_Key{
-			Identifier: ruleIdentifier.String(),
-		})
 		ruleImplementationWrappers, gotRuleImplementationWrappers := e.GetRuleImplementationWrappersValue(&model_analysis_pb.RuleImplementationWrappers_Key{})
-		if !allBuiltinsModulesNames.IsSet() ||
-			!gotActionEncoder ||
-			!gotDirectoryCreationParameters ||
-			!gotFileCreationParameters ||
-			!ruleValue.IsSet() ||
-			!gotRuleImplementationWrappers {
-			return PatchedConfiguredTargetValue[TMetadata]{}, evaluation.ErrMissingDependency
+		gotCommonDependencies := allBuiltinsModulesNames.IsSet() &&
+			gotActionEncoder &&
+			gotDirectoryCreationParameters &&
+			gotFileCreationParameters &&
+			gotRuleImplementationWrappers
+
+		var ruleIdentifier label.CanonicalStarlarkIdentifier
+		var ruleDefinition model_core.Message[*model_starlark_pb.Rule_Definition, TReference]
+		if ruleTarget.RuleIdentifier != "" {
+			var err error
+			ruleIdentifier, err = label.NewCanonicalStarlarkIdentifier(ruleTarget.RuleIdentifier)
+			if err != nil {
+				return PatchedConfiguredTargetValue[TMetadata]{}, err
+			}
+
+			ruleValue := e.GetCompiledBzlFileGlobalValue(&model_analysis_pb.CompiledBzlFileGlobal_Key{
+				Identifier: ruleIdentifier.String(),
+			})
+			if !gotCommonDependencies || !ruleValue.IsSet() {
+				return PatchedConfiguredTargetValue[TMetadata]{}, evaluation.ErrMissingDependency
+			}
+			v, ok := ruleValue.Message.Global.GetKind().(*model_starlark_pb.Value_Rule)
+			if !ok {
+				return PatchedConfiguredTargetValue[TMetadata]{}, fmt.Errorf("%#v is not a rule", ruleIdentifier.String())
+			}
+			d, ok := v.Rule.Kind.(*model_starlark_pb.Rule_Definition_)
+			if !ok {
+				return PatchedConfiguredTargetValue[TMetadata]{}, fmt.Errorf("%#v is not a rule definition", ruleIdentifier.String())
+			}
+			ruleDefinition = model_core.Nested(ruleValue, d.Definition)
+		} else if ruleTarget.RuleDefinition != nil {
+			// Anonymous rule of which the definition is
+			// embedded into the target, as created by
+			// testing.analysis_test(). Synthesize an
+			// identifier based on the file declaring the
+			// implementation function, as it is only used
+			// for error messages and to determine the
+			// package relative to which default attr values
+			// are resolved.
+			if !gotCommonDependencies {
+				return PatchedConfiguredTargetValue[TMetadata]{}, evaluation.ErrMissingDependency
+			}
+			implementationFilename, err := label.NewCanonicalLabel(ruleTarget.RuleDefinition.GetImplementation().GetFilename())
+			if err != nil {
+				return PatchedConfiguredTargetValue[TMetadata]{}, fmt.Errorf("invalid rule implementation function filename: %w", err)
+			}
+			ruleIdentifier = implementationFilename.AppendStarlarkIdentifier(util.Must(label.NewStarlarkIdentifier("analysis_test")))
+			ruleDefinition = model_core.Nested(targetValue, ruleTarget.RuleDefinition)
+		} else {
+			return PatchedConfiguredTargetValue[TMetadata]{}, errors.New("rule target has neither a rule identifier, nor an inline rule definition")
 		}
-		v, ok := ruleValue.Message.Global.GetKind().(*model_starlark_pb.Value_Rule)
-		if !ok {
-			return PatchedConfiguredTargetValue[TMetadata]{}, fmt.Errorf("%#v is not a rule", ruleIdentifier.String())
-		}
-		d, ok := v.Rule.Kind.(*model_starlark_pb.Rule_Definition_)
-		if !ok {
-			return PatchedConfiguredTargetValue[TMetadata]{}, fmt.Errorf("%#v is not a rule definition", ruleIdentifier.String())
-		}
-		ruleDefinition := model_core.Nested(ruleValue, d.Definition)
 
 		thread := c.newStarlarkThread(ctx, e, allBuiltinsModulesNames.Message.BuiltinsModuleNames)
 
@@ -622,6 +740,12 @@ func (c *baseComputer[TReference, TMetadata]) ComputeConfiguredTargetValue(ctx c
 		attrValues["tags"] = tagsList
 
 		attrValues["testonly"] = starlark.Bool(ruleTarget.InheritableAttrs.GetTestonly())
+
+		visibilityValue, err := newVisibilityAttrValue[TReference, TMetadata](targetLabel, ruleTarget.InheritableAttrs)
+		if err != nil {
+			return PatchedConfiguredTargetValue[TMetadata]{}, err
+		}
+		attrValues["visibility"] = visibilityValue
 
 		edgeTransitionAttrValues := make(map[string]any, len(ruleDefinition.Message.Attrs)+2)
 		for k, v := range attrValues {
@@ -740,12 +864,70 @@ func (c *baseComputer[TReference, TMetadata]) ComputeConfiguredTargetValue(ctx c
 			configurationReference = model_core.Nested(configurationReferences, entries[0].OutputConfigurationReference)
 		}
 
+		// Check whether --allow_analysis_failures is enabled in
+		// the target's configuration. If so, analysis failures
+		// of the target need to be caught and reported through
+		// an AnalysisFailureInfo provider, so that analysis test
+		// rules can assert on them. As bool_flag() suppresses
+		// overrides having the default value, an override is
+		// present if and only if the flag is set to True.
+		allowAnalysisFailures := false
+		allowAnalysisFailuresOverride, err := btree.Find(
+			ctx,
+			c.buildSettingOverrideReader,
+			getBuildSettingOverridesFromReference(configurationReference),
+			func(entry model_core.Message[*model_analysis_pb.BuildSettingOverride, TReference]) (int, *model_core_pb.DecodableReference) {
+				switch level := entry.Message.Level.(type) {
+				case *model_analysis_pb.BuildSettingOverride_Leaf_:
+					return strings.Compare(allowAnalysisFailuresBuildSettingLabelStr, level.Leaf.Label), nil
+				case *model_analysis_pb.BuildSettingOverride_Parent_:
+					return strings.Compare(allowAnalysisFailuresBuildSettingLabelStr, level.Parent.FirstLabel), level.Parent.Reference
+				default:
+					return 0, nil
+				}
+			},
+		)
+		if err != nil {
+			return PatchedConfiguredTargetValue[TMetadata]{}, err
+		}
+		if allowAnalysisFailuresOverride.IsSet() {
+			leaf, ok := allowAnalysisFailuresOverride.Message.Level.(*model_analysis_pb.BuildSettingOverride_Leaf_)
+			if !ok {
+				return PatchedConfiguredTargetValue[TMetadata]{}, errors.New("build setting override is not a valid leaf")
+			}
+			if v, ok := leaf.Leaf.Value.GetKind().(*model_starlark_pb.Value_Bool); ok {
+				allowAnalysisFailures = v.Bool
+			}
+		}
+
 		// Compute non-label attrs that depend on a
 		// configuration, due to them using select().
 		missingDependencies := false
 		outputsValues := map[string]any{}
 		ruleTargetPublicAttrValues = ruleTarget.PublicAttrValues
 		targetPackage := targetLabel.GetCanonicalPackage()
+
+		// Expose the "features" and "target_compatible_with"
+		// common attributes through ctx.attr. Both may contain
+		// select() expressions, which need to be resolved
+		// against the target's own configuration.
+		if v, err := c.decodeSelectGroupsAttrValue(ctx, e, thread, model_core.Nested(targetValue, ruleTarget.Features), configurationReference, targetPackage); err != nil {
+			if !errors.Is(err, evaluation.ErrMissingDependency) {
+				return PatchedConfiguredTargetValue[TMetadata]{}, fmt.Errorf("features: %w", err)
+			}
+			missingDependencies = true
+		} else {
+			attrValues["features"] = v
+		}
+		if v, err := c.decodeSelectGroupsAttrValue(ctx, e, thread, model_core.Nested(targetValue, ruleTarget.TargetCompatibleWith), configurationReference, targetPackage); err != nil {
+			if !errors.Is(err, evaluation.ErrMissingDependency) {
+				return PatchedConfiguredTargetValue[TMetadata]{}, fmt.Errorf("target_compatible_with: %w", err)
+			}
+			missingDependencies = true
+		} else {
+			attrValues["target_compatible_with"] = v
+		}
+
 		outputRegistrar := targetOutputRegistrar[TReference, TMetadata]{
 			configurationReference: configurationReference,
 			targetLabel:            targetLabel,
@@ -895,6 +1077,7 @@ func (c *baseComputer[TReference, TMetadata]) ComputeConfiguredTargetValue(ctx c
 		}
 
 		// Last but not least, get the values of label attr.
+		var failedDepProviders []model_core.Message[*model_starlark_pb.Struct, TReference]
 		executableValues := map[string]any{}
 		executableFileToFilesToRun := map[*model_starlark.File[TReference, TMetadata]]model_core.Message[*model_starlark_pb.Struct, TReference]{}
 		fileValues := map[string]any{}
@@ -1066,22 +1249,37 @@ func (c *baseComputer[TReference, TMetadata]) ComputeConfiguredTargetValue(ctx c
 							return nil, fmt.Errorf("invalid label %#v: %w", resolvedLabelStr, err)
 						}
 
-						// Obtain the providers of the target.
-						patchedConfigurationReference2 := model_core.Patch(e, outputConfigurationReference)
-						targetProviders := e.GetTargetProvidersValue(
-							model_core.NewPatchedMessage(
-								&model_analysis_pb.TargetProviders_Key{
-									Label:                  resolvedLabelStr,
-									ConfigurationReference: patchedConfigurationReference2.Message,
-								},
-								patchedConfigurationReference2.Patcher,
-							),
+						// Obtain the providers of the target,
+						// merged with those of any aspects
+						// that this attr requests.
+						providerInstances, err := getTargetProvidersWithAspects(
+							e,
+							resolvedLabelStr,
+							outputConfigurationReference,
+							labelOptions.GetAspects(),
 						)
-						if !targetProviders.IsSet() {
-							missingDependencies = true
-							return starlark.None, nil
+						if err != nil {
+							if errors.Is(err, evaluation.ErrMissingDependency) {
+								missingDependencies = true
+								return starlark.None, nil
+							}
+							return nil, err
 						}
-						providerInstances := model_core.Nested(targetProviders, targetProviders.Message.ProviderInstances)
+
+						// Keep track of dependencies whose
+						// analysis failed, so that their
+						// failure causes can be propagated
+						// if --allow_analysis_failures is
+						// enabled.
+						analysisFailureInfoProviderIdentifierStr := analysisFailureInfoProviderIdentifier.String()
+						if analysisFailureInfoIndex, ok := sort.Find(
+							len(providerInstances.Message),
+							func(i int) int {
+								return strings.Compare(analysisFailureInfoProviderIdentifierStr, providerInstances.Message[i].ProviderInstanceProperties.GetProviderIdentifier())
+							},
+						); ok {
+							failedDepProviders = append(failedDepProviders, model_core.Nested(providerInstances, providerInstances.Message[analysisFailureInfoIndex]))
+						}
 
 						defaultInfoProviderIdentifierStr := defaultInfoProviderIdentifier.String()
 						defaultInfoIndex, ok := sort.Find(
@@ -1159,6 +1357,7 @@ func (c *baseComputer[TReference, TMetadata]) ComputeConfiguredTargetValue(ctx c
 							model_starlark.NewConfiguredTargetReference[TReference, TMetadata](
 								canonicalResolvedLabel,
 								providerInstances,
+								c.newTargetActionsResolver(ctx, e, canonicalResolvedLabel, outputConfigurationReference),
 							),
 						), nil
 					})
@@ -1229,6 +1428,14 @@ func (c *baseComputer[TReference, TMetadata]) ComputeConfiguredTargetValue(ctx c
 		}
 		if missingDependencies {
 			return PatchedConfiguredTargetValue[TMetadata]{}, evaluation.ErrMissingDependency
+		}
+
+		// If analysis of one or more dependencies failed, don't
+		// invoke the implementation function. Instead, propagate
+		// the failure causes of the dependencies, matching
+		// Bazel's behavior.
+		if allowAnalysisFailures && len(failedDepProviders) > 0 {
+			return c.computeAnalysisFailureConfiguredTargetValue(ctx, e, key, targetLabel, emptyDefaultInfo, "", failedDepProviders)
 		}
 
 		rc := &ruleContext[TReference, TMetadata]{
@@ -1316,6 +1523,7 @@ func (c *baseComputer[TReference, TMetadata]) ComputeConfiguredTargetValue(ctx c
 					rc.configurationReference,
 					rc.ruleIdentifier.GetCanonicalLabel().GetCanonicalPackage(),
 					execGroupPlatformLabels,
+					/* extraAspectIdentifiers = */ nil,
 				)
 				if err != nil {
 					if errors.Is(err, evaluation.ErrMissingDependency) {
@@ -1389,11 +1597,22 @@ func (c *baseComputer[TReference, TMetadata]) ComputeConfiguredTargetValue(ctx c
 			/* kwargs = */ nil,
 		)
 		if err != nil {
-			if !errors.Is(err, evaluation.ErrMissingDependency) {
-				var evalErr *starlark.EvalError
-				if errors.As(err, &evalErr) {
-					return PatchedConfiguredTargetValue[TMetadata]{}, errors.New(evalErr.Backtrace())
-				}
+			if errors.Is(err, evaluation.ErrMissingDependency) {
+				return PatchedConfiguredTargetValue[TMetadata]{}, err
+			}
+			// Infrastructure errors (cancellation, storage
+			// unavailability) must never be demoted to analysis
+			// failures, as the resulting cached value would not
+			// be a pure function of the evaluation key.
+			if ctx.Err() != nil || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+				return PatchedConfiguredTargetValue[TMetadata]{}, err
+			}
+			var evalErr *starlark.EvalError
+			if errors.As(err, &evalErr) {
+				err = errors.New(evalErr.Backtrace())
+			}
+			if allowAnalysisFailures {
+				return c.computeAnalysisFailureConfiguredTargetValue(ctx, e, key, targetLabel, emptyDefaultInfo, err.Error(), failedDepProviders)
 			}
 			return PatchedConfiguredTargetValue[TMetadata]{}, err
 		}
@@ -1408,7 +1627,11 @@ func (c *baseComputer[TReference, TMetadata]) ComputeConfiguredTargetValue(ctx c
 				unpack.List(structUnpackerInto),
 			}),
 		).UnpackInto(thread, returnValue, &providerInstances); err != nil {
-			return PatchedConfiguredTargetValue[TMetadata]{}, fmt.Errorf("failed to unpack implementation function return value: %w", err)
+			err = fmt.Errorf("failed to unpack implementation function return value: %w", err)
+			if allowAnalysisFailures && !errors.Is(err, evaluation.ErrMissingDependency) && ctx.Err() == nil {
+				return c.computeAnalysisFailureConfiguredTargetValue(ctx, e, key, targetLabel, emptyDefaultInfo, err.Error(), failedDepProviders)
+			}
+			return PatchedConfiguredTargetValue[TMetadata]{}, err
 		}
 
 		return model_core.BuildPatchedMessage(func(patcher *model_core.ReferenceMessagePatcher[TMetadata]) (*model_analysis_pb.ConfiguredTarget_Value, error) {
@@ -2704,6 +2927,7 @@ func (rca *ruleContextActions[TReference, TMetadata]) doRun(thread *starlark.Thr
 			inlinedtree.AlwaysInline(
 				model_core.NewReferenceMessagePatcher[TMetadata](),
 				func(actionDefinition model_core.PatchedMessage[*model_analysis_pb.TargetActionDefinition, TMetadata]) {
+					actionDefinition.Message.Mnemonic = mnemonic
 					actionDefinition.Message.PlatformPkixPublicKey = rc.execGroups[execGroupIndex].platformPkixPublicKey
 					actionDefinition.Message.UseDefaultShellEnv = useDefaultShellEnv
 				},

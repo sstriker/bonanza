@@ -600,6 +600,11 @@ message TargetActionDefinition {
   // operating system dependent variables as well as variables set via
   // --action_env.
   bool use_default_shell_env = 8;
+
+  // One-word description of the action, e.g. "CppCompile". This is
+  // exposed to aspects via target.actions[i].mnemonic. If empty, the
+  // default mnemonic "Action" is assumed.
+  string mnemonic = 9;
 }
 
 message TargetOutputDefinition {
@@ -661,6 +666,37 @@ message TargetOutputDefinition {
 
     // Output of ctx.actions.write(content=<Args>).
     Write write = 6;
+  }
+}
+
+message ConfiguredAspect {
+  message Key {
+    // Canonical Starlark identifier of the aspect that is applied,
+    // e.g. "@@myrepo+//:aspects.bzl%my_aspect".
+    string aspect_identifier = 1;
+
+    // The label of the configured target to which the aspect is
+    // applied. The label MUST include a canonical repo name, and MUST
+    // NOT include a target name if it matches the last component of
+    // the package path.
+    string label = 2;
+
+    // Platform constraints and build settings that are currently
+    // active for the target to which the aspect is applied.
+    bonanza.model.core.DecodableReference configuration_reference = 3
+        [(bonanza.model.core.object_format) = {
+          proto_list_type_name:
+            "bonanza.model.analysis.BuildSettingOverride";
+        }];
+  }
+
+  message Value {
+    // The values of the provider instances returned by the aspect's
+    // implementation function, sorted alphabetically by provider
+    // identifier. Provider instances of the underlying configured
+    // target are NOT included; they are merged at dependency
+    // resolution time by the target that requested the aspect.
+    repeated bonanza.model.starlark.Struct provider_instances = 1;
   }
 }
 

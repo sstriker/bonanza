@@ -265,6 +265,292 @@ func expandFileIfDirectory[TReference object.BasicReference, TMetadata model_cor
 	}
 }
 
+// expandActionArguments expands the Args objects that make up the
+// command line arguments of an action to a flat sequence of argument
+// strings, applying transformation steps such as directory expansion,
+// map_each, format_each, uniquify, and joining. Each resulting argument
+// is reported through the emit callback.
+func (c *baseComputer[TReference, TMetadata]) expandActionArguments(
+	ctx context.Context,
+	e expandFileIfDirectoryEnvironment[TReference, TMetadata],
+	thread *starlark.Thread,
+	directoryReaders *DirectoryReaders[TReference],
+	arguments model_core.Message[[]*model_analysis_pb.Args, TReference],
+	emit func(string) error,
+) error {
+	valueDecodingOptions := c.getValueDecodingOptions(ctx, func(resolvedLabel label.ResolvedLabel) (starlark.Value, error) {
+		return model_starlark.NewLabel[TReference, TMetadata](resolvedLabel), nil
+	})
+	var errIterArgs error
+	for args := range btree.AllLeaves(
+		ctx,
+		c.argsReader,
+		arguments,
+		/* traverser = */ func(element model_core.Message[*model_analysis_pb.Args, TReference]) (*model_core_pb.DecodableReference, error) {
+			return element.Message.GetParent().GetReference(), nil
+		},
+		&errIterArgs,
+	) {
+		argsLeaf, ok := args.Message.Level.(*model_analysis_pb.Args_Leaf_)
+		if !ok {
+			return errors.New("args entry is not a leaf")
+		}
+		var errIterAdd error
+		for add := range btree.AllLeaves(
+			ctx,
+			c.argsAddReader,
+			model_core.Nested(args, argsLeaf.Leaf.Adds),
+			/* traverser = */ func(element model_core.Message[*model_analysis_pb.Args_Leaf_Add, TReference]) (*model_core_pb.DecodableReference, error) {
+				return element.Message.GetParent().GetReference(), nil
+			},
+			&errIterAdd,
+		) {
+			addLeaf, ok := add.Message.Level.(*model_analysis_pb.Args_Leaf_Add_Leaf_)
+			if !ok {
+				return errors.New("args.add*() entry is not a leaf")
+			}
+
+			values, err := model_starlark.DecodeValue[TReference, TMetadata](
+				model_core.Nested(add, addLeaf.Leaf.Values),
+				/* currentIdentifier = */ nil,
+				valueDecodingOptions,
+			)
+			if err != nil {
+				return err
+			}
+			var valuesIter iter.Seq[starlark.Value]
+			switch typedValues := values.(type) {
+			case *model_starlark.Depset[TReference, TMetadata]:
+				list, err := typedValues.ToList(thread)
+				if err != nil {
+					return err
+				}
+				valuesIter = slices.Values(list)
+			case starlark.Iterable:
+				valuesIter = starlark.Elements(typedValues)
+			default:
+				return errors.New("args.add*() value is not a depset or list")
+			}
+
+			// Apply the following transformation steps:
+			// https://bazel.build/rules/lib/builtins/Args#add_all
+
+			// Step 1: Each directory File item is replaced by all
+			// Files recursively contained in that directory.
+			if addLeaf.Leaf.ExpandDirectories {
+				var expandedValues []starlark.Value
+				for v := range valuesIter {
+					if f, ok := v.(*model_starlark.File[TReference, TMetadata]); ok {
+						var errIter error
+						for child := range expandFileIfDirectory(ctx, e, directoryReaders, f, &errIter) {
+							expandedValues = append(expandedValues, child)
+						}
+						if errIter != nil {
+							return errIter
+						}
+					} else {
+						expandedValues = append(expandedValues, v)
+					}
+				}
+				valuesIter = slices.Values(expandedValues)
+			}
+
+			// Step 2: If map_each is given, it is applied
+			// to each item, and the resulting lists of
+			// strings are concatenated to form the initial
+			// argument list. Otherwise, the initial
+			// argument list is the result of applying the
+			// standard conversion to each item.
+			var stringValues []string
+			if mapEach := addLeaf.Leaf.MapEach; mapEach != nil {
+				mapEachFunc := model_starlark.NewNamedFunction(
+					model_starlark.NewProtoNamedFunctionDefinition[TReference, TMetadata](
+						model_core.Nested(add, mapEach),
+					),
+				)
+
+				// The map_each function is allowed to have
+				// multiple shapes. If it has a single
+				// parameter, it's only called with the File.
+				// If it has two parameters, it is invoked
+				// with a DirectoryExpander that can be used
+				// to selectively perform expansion.
+				numParams, err := mapEachFunc.NumParams(thread)
+				if err != nil {
+					return fmt.Errorf("unable to determine number of parameters of map_each function: %w", err)
+				}
+				var mapEachFuncArgs starlark.Tuple
+				switch numParams {
+				case 1:
+					mapEachFuncArgs = make(starlark.Tuple, 1)
+				case 2:
+					mapEachFuncArgs = make(starlark.Tuple, 2)
+					mapEachFuncArgs[1] = &directoryExpander[TReference, TMetadata]{
+						context:          ctx,
+						environment:      e,
+						directoryReaders: directoryReaders,
+					}
+				default:
+					return errors.New("map_each function should have 1 or 2 parameters")
+				}
+
+				for v := range valuesIter {
+					mapEachFuncArgs[0] = v
+					returnValue, err := starlark.Call(
+						thread,
+						mapEachFunc,
+						mapEachFuncArgs,
+						nil,
+					)
+					if err != nil {
+						if !errors.Is(err, evaluation.ErrMissingDependency) {
+							var evalErr *starlark.EvalError
+							if errors.As(err, &evalErr) {
+								return errors.New(evalErr.Backtrace())
+							}
+						}
+						return err
+					}
+					var s []string
+					if err := unpack.IfNotNone(unpack.Or([]unpack.UnpackerInto[[]string]{
+						unpack.Singleton(unpack.String),
+						unpack.List(unpack.String),
+					})).UnpackInto(thread, returnValue, &s); err != nil {
+						return fmt.Errorf("failed to unpack map function return value: %w", err)
+					}
+					stringValues = append(stringValues, s...)
+				}
+			} else {
+				// No mapping function provided. Apply
+				// standard conversion rules.
+				for v := range valuesIter {
+					var s string
+					switch typedV := v.(type) {
+					case starlark.String:
+						s = string(typedV)
+					case *model_starlark.File[TReference, TMetadata]:
+						s, err = model_starlark.FileGetInputRootPath(typedV.GetDefinition(), typedV.GetTreeRelativePath())
+						if err != nil {
+							return err
+						}
+					case model_starlark.Label[TReference, TMetadata]:
+						s = typedV.String()
+					default:
+						return fmt.Errorf("argument value is of type %#v, while a string, File or Label were expected", typedV.Type())
+					}
+					stringValues = append(stringValues, s)
+				}
+			}
+
+			if len(stringValues) == 0 && addLeaf.Leaf.OmitIfEmpty {
+				continue
+			}
+
+			// Step 6 (early): Except in the case that the
+			// list is empty and omit_if_empty is true,
+			// start_with is inserted as the first argument,
+			// if it is given.
+			if startWith := addLeaf.Leaf.StartWith; startWith != nil {
+				if err := emit(startWith.Value); err != nil {
+					return err
+				}
+			}
+
+			formatEachPrefix, formatEachSuffix, err := splitArgsTemplate(addLeaf.Leaf.FormatEach)
+			if err != nil {
+				return fmt.Errorf("invalid value for args.add_*(format_each=%#v): %w", addLeaf.Leaf.FormatEach, err)
+			}
+			var seen map[string]struct{}
+			if addLeaf.Leaf.Uniquify {
+				seen = make(map[string]struct{}, len(stringValues))
+			}
+
+			switch style := addLeaf.Leaf.Style.(type) {
+			case *model_analysis_pb.Args_Leaf_Add_Leaf_Separate_:
+				for _, v := range stringValues {
+					// Step 4: If uniquify is true,
+					// duplicate arguments are removed.
+					// The first occurrence is the one
+					// that remains.
+					if seen != nil {
+						if _, ok := seen[v]; ok {
+							continue
+						}
+						seen[v] = struct{}{}
+					}
+
+					// Step 5: If a before_each string
+					// is given, it is inserted as a new
+					// argument before each existing
+					// argument in the list.
+					if beforeEach := style.Separate.BeforeEach; beforeEach != nil {
+						if err := emit(beforeEach.Value); err != nil {
+							return err
+						}
+					}
+
+					// Step 3: Each argument in the list
+					// is formatted with format_each.
+					if err := emit(formatEachPrefix + v + formatEachSuffix); err != nil {
+						return err
+					}
+				}
+
+				// Step 6: Except in the case that the
+				// list is empty and omit_if_empty is
+				// true, terminate_with is inserted as
+				// the last argument, if it is given.
+				if terminateWith := style.Separate.TerminateWith; terminateWith != nil {
+					if err := emit(terminateWith.Value); err != nil {
+						return err
+					}
+				}
+			case *model_analysis_pb.Args_Leaf_Add_Leaf_Joined_:
+				formatJoinedPrefix, formatJoinedSuffix, err := splitArgsTemplate(style.Joined.FormatJoined)
+				if err != nil {
+					return fmt.Errorf("invalid value for args.add_*(format_joined=%#v): %w", style.Joined.FormatJoined, err)
+				}
+				var joinedValues strings.Builder
+				joinedValues.WriteString(formatJoinedPrefix)
+
+				for i, v := range stringValues {
+					// Step 4: If uniquify is true,
+					// duplicate arguments are removed.
+					// The first occurrence is the one
+					// that remains.
+					if seen != nil {
+						if _, ok := seen[v]; ok {
+							continue
+						}
+						seen[v] = struct{}{}
+					}
+
+					if i > 0 {
+						joinedValues.WriteString(style.Joined.JoinWith)
+					}
+
+					// Step 3: Each argument in the list
+					// is formatted with format_each.
+					joinedValues.WriteString(formatEachPrefix)
+					joinedValues.WriteString(v)
+					joinedValues.WriteString(formatEachSuffix)
+				}
+
+				joinedValues.WriteString(formatJoinedSuffix)
+				if err := emit(joinedValues.String()); err != nil {
+					return err
+				}
+			default:
+				return errors.New("unknown args.add*() style")
+			}
+		}
+		if errIterAdd != nil {
+			return errIterAdd
+		}
+	}
+	return errIterArgs
+}
+
 func (c *baseComputer[TReference, TMetadata]) ComputeTargetActionCommandValue(ctx context.Context, key model_core.Message[*model_analysis_pb.TargetActionCommand_Key, TReference], e TargetActionCommandEnvironment[TReference, TMetadata]) (PatchedTargetActionCommandValue[TMetadata], error) {
 	id := model_core.Nested(key, key.Message.Id)
 	if id.Message == nil {
@@ -309,319 +595,26 @@ func (c *baseComputer[TReference, TMetadata]) ComputeTargetActionCommandValue(ct
 	// TODO: Respect use_param_file().
 	referenceFormat := c.referenceFormat
 	argumentsBuilder, argumentsParentNodeComputer := newArgumentsBuilder(ctx, actionEncoder, referenceFormat, e)
-	valueDecodingOptions := c.getValueDecodingOptions(ctx, func(resolvedLabel label.ResolvedLabel) (starlark.Value, error) {
-		return model_starlark.NewLabel[TReference, TMetadata](resolvedLabel), nil
-	})
 	thread := c.newStarlarkThread(ctx, e, allBuiltinsModulesNames.Message.BuiltinsModuleNames)
-	var errIterArgs error
-	for args := range btree.AllLeaves(
+	if err := c.expandActionArguments(
 		ctx,
-		c.argsReader,
+		e,
+		thread,
+		directoryReaders,
 		model_core.Nested(action, actionDefinition.Arguments),
-		/* traverser = */ func(element model_core.Message[*model_analysis_pb.Args, TReference]) (*model_core_pb.DecodableReference, error) {
-			return element.Message.GetParent().GetReference(), nil
-		},
-		&errIterArgs,
-	) {
-		argsLeaf, ok := args.Message.Level.(*model_analysis_pb.Args_Leaf_)
-		if !ok {
-			return PatchedTargetActionCommandValue[TMetadata]{}, errors.New("args entry is not a leaf")
-		}
-		var errIterAdd error
-		for add := range btree.AllLeaves(
-			ctx,
-			c.argsAddReader,
-			model_core.Nested(args, argsLeaf.Leaf.Adds),
-			/* traverser = */ func(element model_core.Message[*model_analysis_pb.Args_Leaf_Add, TReference]) (*model_core_pb.DecodableReference, error) {
-				return element.Message.GetParent().GetReference(), nil
-			},
-			&errIterAdd,
-		) {
-			addLeaf, ok := add.Message.Level.(*model_analysis_pb.Args_Leaf_Add_Leaf_)
-			if !ok {
-				return PatchedTargetActionCommandValue[TMetadata]{}, errors.New("args.add*() entry is not a leaf")
-			}
-
-			values, err := model_starlark.DecodeValue[TReference, TMetadata](
-				model_core.Nested(add, addLeaf.Leaf.Values),
-				/* currentIdentifier = */ nil,
-				valueDecodingOptions,
+		func(s string) error {
+			return argumentsBuilder.PushChild(
+				model_core.NewSimplePatchedMessage[TMetadata](
+					&model_command_pb.ArgumentList_Element{
+						Level: &model_command_pb.ArgumentList_Element_Leaf{
+							Leaf: s,
+						},
+					},
+				),
 			)
-			if err != nil {
-				return PatchedTargetActionCommandValue[TMetadata]{}, err
-			}
-			var valuesIter iter.Seq[starlark.Value]
-			switch typedValues := values.(type) {
-			case *model_starlark.Depset[TReference, TMetadata]:
-				list, err := typedValues.ToList(thread)
-				if err != nil {
-					return PatchedTargetActionCommandValue[TMetadata]{}, err
-				}
-				valuesIter = slices.Values(list)
-			case starlark.Iterable:
-				valuesIter = starlark.Elements(typedValues)
-			default:
-				return PatchedTargetActionCommandValue[TMetadata]{}, errors.New("args.add*() value is not a depset or list")
-			}
-
-			// Apply the following transformation steps:
-			// https://bazel.build/rules/lib/builtins/Args#add_all
-
-			// Step 1: Each directory File item is replaced by all
-			// Files recursively contained in that directory.
-			if addLeaf.Leaf.ExpandDirectories {
-				var expandedValues []starlark.Value
-				for v := range valuesIter {
-					if f, ok := v.(*model_starlark.File[TReference, TMetadata]); ok {
-						var errIter error
-						for child := range expandFileIfDirectory(ctx, e, directoryReaders, f, &errIter) {
-							expandedValues = append(expandedValues, child)
-						}
-						if errIter != nil {
-							return PatchedTargetActionCommandValue[TMetadata]{}, errIter
-						}
-					} else {
-						expandedValues = append(expandedValues, v)
-					}
-				}
-				valuesIter = slices.Values(expandedValues)
-			}
-
-			// Step 2: If map_each is given, it is applied
-			// to each item, and the resulting lists of
-			// strings are concatenated to form the initial
-			// argument list. Otherwise, the initial
-			// argument list is the result of applying the
-			// standard conversion to each item.
-			var stringValues []string
-			if mapEach := addLeaf.Leaf.MapEach; mapEach != nil {
-				mapEachFunc := model_starlark.NewNamedFunction(
-					model_starlark.NewProtoNamedFunctionDefinition[TReference, TMetadata](
-						model_core.Nested(add, mapEach),
-					),
-				)
-
-				// The map_each function is allowed to have
-				// multiple shapes. If it has a single
-				// parameter, it's only called with the File.
-				// If it has two parameters, it is invoked
-				// with a DirectoryExpander that can be used
-				// to selectively perform expansion.
-				numParams, err := mapEachFunc.NumParams(thread)
-				if err != nil {
-					return PatchedTargetActionCommandValue[TMetadata]{}, fmt.Errorf("unable to determine number of parameters of map_each function: %w", err)
-				}
-				var mapEachFuncArgs starlark.Tuple
-				switch numParams {
-				case 1:
-					mapEachFuncArgs = make(starlark.Tuple, 1)
-				case 2:
-					mapEachFuncArgs = make(starlark.Tuple, 2)
-					mapEachFuncArgs[1] = &directoryExpander[TReference, TMetadata]{
-						context:          ctx,
-						environment:      e,
-						directoryReaders: directoryReaders,
-					}
-				default:
-					return PatchedTargetActionCommandValue[TMetadata]{}, errors.New("map_each function should have 1 or 2 parameters")
-				}
-
-				for v := range valuesIter {
-					mapEachFuncArgs[0] = v
-					returnValue, err := starlark.Call(
-						thread,
-						mapEachFunc,
-						mapEachFuncArgs,
-						nil,
-					)
-					if err != nil {
-						if !errors.Is(err, evaluation.ErrMissingDependency) {
-							var evalErr *starlark.EvalError
-							if errors.As(err, &evalErr) {
-								return PatchedTargetActionCommandValue[TMetadata]{}, errors.New(evalErr.Backtrace())
-							}
-						}
-						return PatchedTargetActionCommandValue[TMetadata]{}, err
-					}
-					var s []string
-					if err := unpack.IfNotNone(unpack.Or([]unpack.UnpackerInto[[]string]{
-						unpack.Singleton(unpack.String),
-						unpack.List(unpack.String),
-					})).UnpackInto(thread, returnValue, &s); err != nil {
-						return PatchedTargetActionCommandValue[TMetadata]{}, fmt.Errorf("failed to unpack map function return value: %w", err)
-					}
-					stringValues = append(stringValues, s...)
-				}
-			} else {
-				// No mapping function provided. Apply
-				// standard conversion rules.
-				for v := range valuesIter {
-					var s string
-					switch typedV := v.(type) {
-					case starlark.String:
-						s = string(typedV)
-					case *model_starlark.File[TReference, TMetadata]:
-						s, err = model_starlark.FileGetInputRootPath(typedV.GetDefinition(), typedV.GetTreeRelativePath())
-						if err != nil {
-							return PatchedTargetActionCommandValue[TMetadata]{}, err
-						}
-					case model_starlark.Label[TReference, TMetadata]:
-						s = typedV.String()
-					default:
-						return PatchedTargetActionCommandValue[TMetadata]{}, fmt.Errorf("argument value is of type %#v, while a string, File or Label were expected", typedV.Type())
-					}
-					stringValues = append(stringValues, s)
-				}
-			}
-
-			if len(stringValues) == 0 && addLeaf.Leaf.OmitIfEmpty {
-				continue
-			}
-
-			// Step 6 (early): Except in the case that the
-			// list is empty and omit_if_empty is true,
-			// start_with is inserted as the first argument,
-			// if it is given.
-			if startWith := addLeaf.Leaf.StartWith; startWith != nil {
-				if err := argumentsBuilder.PushChild(
-					model_core.NewSimplePatchedMessage[TMetadata](
-						&model_command_pb.ArgumentList_Element{
-							Level: &model_command_pb.ArgumentList_Element_Leaf{
-								Leaf: startWith.Value,
-							},
-						},
-					),
-				); err != nil {
-					return PatchedTargetActionCommandValue[TMetadata]{}, err
-				}
-			}
-
-			formatEachPrefix, formatEachSuffix, err := splitArgsTemplate(addLeaf.Leaf.FormatEach)
-			if err != nil {
-				return PatchedTargetActionCommandValue[TMetadata]{}, fmt.Errorf("invalid value for args.add_*(format_each=%#v): %w", addLeaf.Leaf.FormatEach, err)
-			}
-			var seen map[string]struct{}
-			if addLeaf.Leaf.Uniquify {
-				seen = make(map[string]struct{}, len(stringValues))
-			}
-
-			switch style := addLeaf.Leaf.Style.(type) {
-			case *model_analysis_pb.Args_Leaf_Add_Leaf_Separate_:
-				for _, v := range stringValues {
-					// Step 4: If uniquify is true,
-					// duplicate arguments are removed.
-					// The first occurrence is the one
-					// that remains.
-					if seen != nil {
-						if _, ok := seen[v]; ok {
-							continue
-						}
-						seen[v] = struct{}{}
-					}
-
-					// Step 5: If a before_each string
-					// is given, it is inserted as a new
-					// argument before each existing
-					// argument in the list.
-					if beforeEach := style.Separate.BeforeEach; beforeEach != nil {
-						if err := argumentsBuilder.PushChild(
-							model_core.NewSimplePatchedMessage[TMetadata](
-								&model_command_pb.ArgumentList_Element{
-									Level: &model_command_pb.ArgumentList_Element_Leaf{
-										Leaf: beforeEach.Value,
-									},
-								},
-							),
-						); err != nil {
-							return PatchedTargetActionCommandValue[TMetadata]{}, err
-						}
-					}
-
-					// Step 3: Each argument in the list
-					// is formatted with format_each.
-					if err := argumentsBuilder.PushChild(
-						model_core.NewSimplePatchedMessage[TMetadata](
-							&model_command_pb.ArgumentList_Element{
-								Level: &model_command_pb.ArgumentList_Element_Leaf{
-									Leaf: formatEachPrefix + v + formatEachSuffix,
-								},
-							},
-						),
-					); err != nil {
-						return PatchedTargetActionCommandValue[TMetadata]{}, err
-					}
-				}
-
-				// Step 6: Except in the case that the
-				// list is empty and omit_if_empty is
-				// true, terminate_with is inserted as
-				// the last argument, if it is given.
-				if terminateWith := style.Separate.TerminateWith; terminateWith != nil {
-					if err := argumentsBuilder.PushChild(
-						model_core.NewSimplePatchedMessage[TMetadata](
-							&model_command_pb.ArgumentList_Element{
-								Level: &model_command_pb.ArgumentList_Element_Leaf{
-									Leaf: terminateWith.Value,
-								},
-							},
-						),
-					); err != nil {
-						return PatchedTargetActionCommandValue[TMetadata]{}, err
-					}
-				}
-			case *model_analysis_pb.Args_Leaf_Add_Leaf_Joined_:
-				formatJoinedPrefix, formatJoinedSuffix, err := splitArgsTemplate(style.Joined.FormatJoined)
-				if err != nil {
-					return PatchedTargetActionCommandValue[TMetadata]{}, fmt.Errorf("invalid value for args.add_*(format_joined=%#v): %w", style.Joined.FormatJoined, err)
-				}
-				var joinedValues strings.Builder
-				joinedValues.WriteString(formatJoinedPrefix)
-
-				for i, v := range stringValues {
-					// Step 4: If uniquify is true,
-					// duplicate arguments are removed.
-					// The first occurrence is the one
-					// that remains.
-					if seen != nil {
-						if _, ok := seen[v]; ok {
-							continue
-						}
-						seen[v] = struct{}{}
-					}
-
-					if i > 0 {
-						joinedValues.WriteString(style.Joined.JoinWith)
-					}
-
-					// Step 3: Each argument in the list
-					// is formatted with format_each.
-					joinedValues.WriteString(formatEachPrefix)
-					joinedValues.WriteString(v)
-					joinedValues.WriteString(formatEachSuffix)
-				}
-
-				joinedValues.WriteString(formatJoinedSuffix)
-				if err := argumentsBuilder.PushChild(
-					model_core.NewSimplePatchedMessage[TMetadata](
-						&model_command_pb.ArgumentList_Element{
-							Level: &model_command_pb.ArgumentList_Element_Leaf{
-								Leaf: joinedValues.String(),
-							},
-						},
-					),
-				); err != nil {
-					return PatchedTargetActionCommandValue[TMetadata]{}, err
-				}
-			default:
-				return PatchedTargetActionCommandValue[TMetadata]{}, errors.New("unknown args.add*() style")
-			}
-		}
-		if errIterAdd != nil {
-			return PatchedTargetActionCommandValue[TMetadata]{}, errIterAdd
-		}
-	}
-	if errIterArgs != nil {
-		return PatchedTargetActionCommandValue[TMetadata]{}, errIterArgs
+		},
+	); err != nil {
+		return PatchedTargetActionCommandValue[TMetadata]{}, err
 	}
 	argumentsList, err := argumentsBuilder.FinalizeList()
 	if err != nil {

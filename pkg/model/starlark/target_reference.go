@@ -18,6 +18,13 @@ import (
 	"go.starlark.net/syntax"
 )
 
+// TargetActionsResolver is a callback that ConfiguredTargetReference
+// uses to lazily obtain the list of actions that a configured target
+// registered, the first time target.actions is accessed. Errors are
+// propagated verbatim, so that evaluation.ErrMissingDependency can flow
+// out of the running Starlark code and restart the computation.
+type TargetActionsResolver func(thread *starlark.Thread) (starlark.Value, error)
+
 // ConfiguredTargetReference contains the properties of a Starlark Target
 // object of a configured target.
 //
@@ -30,16 +37,20 @@ type ConfiguredTargetReference[TReference object.BasicReference, TMetadata model
 	label            pg_label.CanonicalLabel
 	encodedProviders model_core.Message[[]*model_starlark_pb.Struct, TReference]
 	decodedProviders []atomic.Pointer[Struct[TReference, TMetadata]]
+	getActions       TargetActionsResolver
+	decodedActions   atomic.Pointer[starlark.Value]
 }
 
 // NewConfiguredTargetReference creates a ConfiguredTargetReference
 // object, which contains the properties of a Starlark Target object of
-// a configured target.
-func NewConfiguredTargetReference[TReference object.BasicReference, TMetadata model_core.ReferenceMetadata](label pg_label.CanonicalLabel, providers model_core.Message[[]*model_starlark_pb.Struct, TReference]) *ConfiguredTargetReference[TReference, TMetadata] {
+// a configured target. getActions may be nil, in which case
+// target.actions evaluates to an empty list.
+func NewConfiguredTargetReference[TReference object.BasicReference, TMetadata model_core.ReferenceMetadata](label pg_label.CanonicalLabel, providers model_core.Message[[]*model_starlark_pb.Struct, TReference], getActions TargetActionsResolver) *ConfiguredTargetReference[TReference, TMetadata] {
 	return &ConfiguredTargetReference[TReference, TMetadata]{
 		label:            label,
 		encodedProviders: providers,
 		decodedProviders: make([]atomic.Pointer[Struct[TReference, TMetadata]], len(providers.Message)),
+		getActions:       getActions,
 	}
 }
 
@@ -184,6 +195,30 @@ func (tr *TargetReference[TReference, TMetadata]) Attr(thread *starlark.Thread, 
 
 	if ctr := tr.configured; ctr != nil {
 		switch name {
+		case "actions":
+			if v := ctr.decodedActions.Load(); v != nil {
+				return *v, nil
+			}
+			var actions starlark.Value
+			if ctr.getActions == nil {
+				// Target references that were decoded
+				// from storage do not provide access to
+				// actions. This is consistent with
+				// Bazel, which only guarantees that
+				// target.actions is available on targets
+				// that are provided to aspect
+				// implementation functions.
+				actions = starlark.NewList(nil)
+			} else {
+				var err error
+				actions, err = ctr.getActions(thread)
+				if err != nil {
+					return nil, err
+				}
+			}
+			actions.Freeze()
+			ctr.decodedActions.Store(&actions)
+			return actions, nil
 		case "data_runfiles", "default_runfiles", "files", "files_to_run":
 			// Fields provided by DefaultInfo can be accessed directly.
 			defaultInfoProviderValue, err := ctr.getProviderValue(thread, defaultInfoProviderIdentifier)
@@ -204,6 +239,7 @@ var unconfiguredTargetReferenceAttrNames = []string{
 }
 
 var configuredTargetReferenceAttrNames = []string{
+	"actions",
 	"data_runfiles",
 	"default_runfiles",
 	"files",

@@ -214,8 +214,8 @@ type queues[TReference object.BasicReference, TMetadata model_core.ReferenceMeta
 
 func (q *queues[TReference, TMetadata]) PickQueue(typeURL string) *model_evaluation.RecursiveComputerEvaluationQueue[TReference, TMetadata] {
 	switch typeURL {
-	case "type.googleapis.com/bonanza.model.analysis.HttpFileContents.Key":
-	case "type.googleapis.com/bonanza.model.analysis.RawActionResult.Key":
+	case "type.googleapis.com/bonanza.model.analysis.HttpFileContents.Key",
+		"type.googleapis.com/bonanza.model.analysis.RawActionResult.Key":
 		// Run evaluation steps that call into the remote
 		// execution client with a higher concurrency.
 		return q.remote.PickQueue(typeURL)

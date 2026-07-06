@@ -147,6 +147,16 @@ func (f *File[TReference, TMetadata]) getPathEnd() (string, error) {
 	return canonicalLabel.GetTargetName().String(), nil
 }
 
+// RootModuleNameResolverKey is the key under which a
+// RootModuleNameResolver may be registered as a Starlark thread local,
+// so that short paths of files belonging to the root module can be
+// computed relative to the workspace root, as done by Bazel.
+const RootModuleNameResolverKey = "root_module_name_resolver"
+
+// RootModuleNameResolver returns the name of the root module of the
+// current build.
+type RootModuleNameResolver = func() (string, error)
+
 // Attr computes the value of an attribute of a Starlark file object
 // when it is requested.
 func (f *File[TReference, TMetadata]) Attr(thread *starlark.Thread, name string) (starlark.Value, error) {
@@ -238,12 +248,27 @@ func (f *File[TReference, TMetadata]) Attr(thread *starlark.Thread, name string)
 			return nil, fmt.Errorf("invalid canonical label %#v: %w", d.Label, err)
 		}
 		canonicalPackage := canonicalLabel.GetCanonicalPackage()
+
+		// Bazel only prefixes short paths of files in external
+		// repos with "../${repo}". Files belonging to the root
+		// module resolve relative to the workspace root.
+		repoPrefix := []string{"..", canonicalPackage.GetCanonicalRepo().String()}
+		if resolver, ok := thread.Local(RootModuleNameResolverKey).(RootModuleNameResolver); ok && resolver != nil {
+			rootModuleName, err := resolver()
+			if err != nil {
+				return nil, err
+			}
+			if canonicalPackage.GetCanonicalRepo().String() == rootModuleName+"+" {
+				repoPrefix = nil
+			}
+		}
 		return starlark.String(go_path.Join(
-			"..",
-			canonicalPackage.GetCanonicalRepo().String(),
-			canonicalPackage.GetPackagePath(),
-			canonicalLabel.GetTargetName().String(),
-			f.treeRelativePath.GetUNIXString(),
+			append(
+				repoPrefix,
+				canonicalPackage.GetPackagePath(),
+				canonicalLabel.GetTargetName().String(),
+				f.treeRelativePath.GetUNIXString(),
+			)...,
 		)), nil
 	case "tree_relative_path":
 		if f.treeRelativePath == nil {

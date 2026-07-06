@@ -329,9 +329,9 @@ func (r *changeTrackingDirectoryNormalizingPathResolver[TReference, TMetadata]) 
 
 func (r *changeTrackingDirectoryNormalizingPathResolver[TReference, TMetadata]) OnUp() (path.ComponentWalker, error) {
 	if _, ok := r.directories.PopSingle(); !ok {
-		r.components = r.components[:len(r.components)-1]
 		return nil, errors.New("path resolves to a location above the root directory")
 	}
+	r.components = r.components[:len(r.components)-1]
 	return r, nil
 }
 

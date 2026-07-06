@@ -72,7 +72,11 @@ local statePath = std.extVar('STATE_PATH');
   workerId: { host: std.extVar('HOSTNAME') },
   localEvaluationConcurrency: std.extVar('NCPU'),
   remoteEvaluationConcurrency: 100,
-  uploadConcurrency: std.extVar('NCPU'),
+  // Uploading evaluation results to storage is I/O bound rather than
+  // CPU bound. Use a concurrency well above the core count, so that
+  // cache write-back does not become the bottleneck during builds that
+  // evaluate many keys.
+  uploadConcurrency: 32,
   objectStoreConcurrency: std.extVar('NCPU'),
   cacheTagSignaturePrivateKey: |||
     -----BEGIN PRIVATE KEY-----

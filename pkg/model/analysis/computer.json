@@ -47,7 +47,7 @@
             "VisibleTarget"
          ]
       },
-      "BuildSpecification": { },
+      "BuildSpecification": {},
       "BuiltinsModuleNames": {
          "dependsOn": [
             "BuildSpecification"
@@ -119,18 +119,52 @@
             "CompiledBzlFile"
          ]
       },
-      "ConfiguredTarget": {
+      "ConfiguredAspect": {
          "dependsOn": [
             "ActionEncoderObject",
+            "ActionReaders",
             "BuiltinsModuleNames",
             "CanonicalRepoName",
             "CompiledBzlFileDecodedGlobals",
             "CompiledBzlFileFunctionFactory",
             "CompiledBzlFileGlobal",
+            "ConfiguredAspect",
+            "ConfiguredTarget",
             "DirectoryCreationParametersObject",
+            "DirectoryReaders",
             "EmptyDefaultInfo",
             "ExecTransition",
             "FileCreationParametersObject",
+            "FileRoot",
+            "ResolvedToolchains",
+            "RootModule",
+            "RuleImplementationWrappers",
+            "Select",
+            "Target",
+            "TargetProvider",
+            "TargetProviders",
+            "UserDefinedTransition",
+            "VisibleTarget"
+         ],
+         "keyContainsReferences": true
+      },
+      "ConfiguredTarget": {
+         "dependsOn": [
+            "ActionEncoderObject",
+            "ActionReaders",
+            "BuiltinsModuleNames",
+            "CanonicalRepoName",
+            "CompiledBzlFileDecodedGlobals",
+            "CompiledBzlFileFunctionFactory",
+            "CompiledBzlFileGlobal",
+            "ConfiguredAspect",
+            "ConfiguredTarget",
+            "DirectoryCreationParametersObject",
+            "DirectoryReaders",
+            "EmptyDefaultInfo",
+            "ExecTransition",
+            "FileCreationParametersObject",
+            "FileRoot",
             "ResolvedToolchains",
             "RootModule",
             "RuleImplementationWrappers",
@@ -407,6 +441,7 @@
             "FileProperties",
             "FileReader",
             "Glob",
+            "PackagesAtAndBelow",
             "RepoDefaultAttrs",
             "RootModule"
          ]

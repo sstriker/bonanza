@@ -34,6 +34,37 @@ func TestParseCommandAndArguments(t *testing.T) {
 	})
 
 	t.Run("Build", func(t *testing.T) {
+		t.Run("BuildSettingOverrides", func(t *testing.T) {
+			command, err := arguments.ParseCommandAndArguments(
+				arguments.ConfigurationDirectives{},
+				[]string{
+					"build",
+					"--@rules_foo//:my_string=hello",
+					"--//my/pkg:my_bool",
+					"--no@rules_foo//:other_bool",
+					"//...",
+				},
+			)
+			require.NoError(t, err)
+			require.Equal(t, []arguments.BuildSettingOverride{
+				{Label: "@rules_foo//:my_string", Value: "hello"},
+				{Label: "//my/pkg:my_bool", Value: "true"},
+				{Label: "@rules_foo//:other_bool", Value: "false"},
+			}, command.(*arguments.BuildCommand).BuildSettingOverrides)
+		})
+
+		t.Run("BuildSettingOverrideNegatedWithValue", func(t *testing.T) {
+			_, err := arguments.ParseCommandAndArguments(
+				arguments.ConfigurationDirectives{},
+				[]string{
+					"build",
+					"--no@rules_foo//:other_bool=false",
+					"//...",
+				},
+			)
+			require.EqualError(t, err, "flag --no@rules_foo//:other_bool not recognized")
+		})
+
 		t.Run("KeepGoingLong", func(t *testing.T) {
 			command, err := arguments.ParseCommandAndArguments(
 				arguments.ConfigurationDirectives{},

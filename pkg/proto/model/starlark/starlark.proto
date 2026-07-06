@@ -57,7 +57,16 @@ message Alias {
 }
 
 message Aspect {
-  message Definition {}
+  message Definition {
+    // Names of rule attributes along which this aspect is propagated
+    // to dependencies of the targets to which it is applied (e.g.
+    // "deps"), or the string "*" to propagate along all attributes.
+    repeated string attr_aspects = 1;
+
+    // Starlark function that implements this aspect. It is invoked
+    // with two positional arguments: (target, ctx).
+    Function implementation = 2;
+  }
 
   oneof kind {
     string reference = 1;
@@ -419,6 +428,15 @@ message InheritableAttrs {
   // Which targets in other packages are permitted to depend on this
   // target.
   PackageGroup visibility = 4;
+
+  // The labels that were provided to the target's "visibility"
+  // attribute or to package(default_visibility = ...), in canonical
+  // form, preserving the original order. The package group stored in
+  // the "visibility" field is derived from these labels. This field
+  // is used to expose the original labels through ctx.attr.visibility.
+  // If empty, the visibility should be presented as
+  // ["//visibility:private"].
+  repeated string visibility_labels = 5;
 }
 
 message Int {
@@ -777,6 +795,19 @@ message RuleTarget {
   // default value if the build setting is not set explicitly is
   // provided.
   Value build_setting_default = 7;
+
+  // If set instead of rule_identifier, the definition of the rule used
+  // by this target is provided inline instead of referring to a global
+  // declared in a .bzl file. This is used for anonymous rules that are
+  // synthesized at loading time, such as the ones created by calls to
+  // testing.analysis_test().
+  Rule.Definition rule_definition = 8;
+
+  // Values of the "features" common attribute, in the form of a
+  // sequence of select() expressions whose values need to be
+  // concatenated. Uses the same representation as
+  // target_compatible_with above.
+  repeated Select.Group features = 9;
 }
 
 message Select {
@@ -904,10 +935,36 @@ message Transition {
       string canonical_package = 4;
     }
 
+    // Transition created through analysis_test_transition(). Unlike
+    // regular user-defined transitions, these don't have an
+    // implementation function. Instead, they apply a constant set of
+    // changes to build settings.
+    message AnalysisTest {
+      message Setting {
+        // Label of the build setting whose value needs to be changed.
+        string label = 1;
+
+        // The value that the build setting should assume in the output
+        // configuration.
+        Value value = 2;
+      }
+
+      // Changes to build settings that this transition applies.
+      //
+      // Entries in this list MUST be sorted alphabetically by label.
+      repeated Setting settings = 1;
+
+      // The canonical package in which the transition was declared. The
+      // name of the package is used to resolve the setting labels.
+      string canonical_package = 2;
+    }
+
     oneof kind {
       string identifier = 1;
 
       Definition definition = 2;
+
+      AnalysisTest analysis_test = 3;
     }
   }
 

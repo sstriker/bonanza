@@ -1,3 +1,4 @@
+AnalysisFailure = provider()
 AnalysisFailureInfo = provider()
 AnalysisTestResultInfo = provider()
 ConfigSettingInfo = provider()
@@ -129,6 +130,23 @@ def _run_environment_info_init(environment = {}, inherited_environment = []):
     }
 
 RunEnvironmentInfo, _RunEnvironmentInfoRaw = provider(init = _run_environment_info_init)
+
+def _testing_test_environment(environment = {}, inherited_environment = []):
+    # Deprecated alias for RunEnvironmentInfo that, unlike the
+    # provider, may be invoked with positional arguments. Still used
+    # by rules_testing's tests.
+    return RunEnvironmentInfo(
+        environment = environment,
+        inherited_environment = inherited_environment,
+    )
+
+def _testing_execution_info(requirements = {}, exec_group = "test"):
+    # Bazel's testing.ExecutionInfo is a function accepting positional
+    # arguments, not the provider itself.
+    return ExecutionInfo(
+        requirements = requirements,
+        exec_group = exec_group,
+    )
 
 def _template_variable_info_init(variables):
     return {"variables": variables}
@@ -570,12 +588,18 @@ starlark_doc_extract = rule(
 )
 
 def _test_suite_impl(ctx):
-    fail("TODO: implement")
+    # Building a test_suite builds the tests it references. Running
+    # them and expanding an empty "tests" attribute to all tests in the
+    # package are left unimplemented.
+    return [DefaultInfo(files = depset(transitive = [
+        t[DefaultInfo].files
+        for t in ctx.attr.tests
+    ]))]
 
 test_suite = rule(
     _test_suite_impl,
     attrs = {
-        "tests": attr.string_list(),
+        "tests": attr.label_list(),
     },
     needs = [],
 )
@@ -1587,7 +1611,12 @@ exported_rules = {
     "label_flag": native.label_flag,
     "label_setting": native.label_setting,
     "licenses": licenses,
+    "module_name": native.module_name,
+    "module_version": native.module_version,
     "package_group": native.package_group,
+    "package_name": native.package_name,
+    "repo_name": native.repo_name,
+    "repository_name": native.repository_name,
     "platform": platform,
     "starlark_doc_extract": starlark_doc_extract,
     "test_suite": test_suite,
@@ -1632,7 +1661,9 @@ exported_toplevels = {
         incompatible_enable_proto_toolchain_resolution = proto_common_do_not_use_incompatible_enable_proto_toolchain_resolution,
     ),
     "testing": struct(
-        ExecutionInfo = ExecutionInfo,
+        ExecutionInfo = _testing_execution_info,
+        TestEnvironment = _testing_test_environment,
+        analysis_test = testing.analysis_test,
     ),
 }
 

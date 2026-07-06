@@ -155,6 +155,14 @@ func main() {
 			return util.StatusWrap(err, "Invalid platform queue with no workers timeout")
 		}
 
+		workerWithNoSynchronizationsTimeout := time.Minute
+		if d := configuration.WorkerWithNoSynchronizationsTimeout; d != nil {
+			if err := d.CheckValid(); err != nil {
+				return util.StatusWrap(err, "Invalid worker with no synchronizations timeout")
+			}
+			workerWithNoSynchronizationsTimeout = d.AsDuration()
+		}
+
 		// Create in-memory build queue.
 		generator := random.NewFastSingleThreadedGenerator()
 		buildQueue := scheduler.NewInMemoryBuildQueue(
@@ -173,7 +181,7 @@ func main() {
 					return random.Duration(generator, 2*time.Minute)
 				},
 				WorkerTaskRetryCount:                  9,
-				WorkerWithNoSynchronizationsTimeout:   time.Minute,
+				WorkerWithNoSynchronizationsTimeout:   workerWithNoSynchronizationsTimeout,
 				VerificationPrivateKeyRefreshInterval: time.Hour,
 			},
 			actionRouter,

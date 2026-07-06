@@ -1580,7 +1580,8 @@ label_flag(
 
 string_flag(
     name = "python_path",
-    build_setting_default = "",
+    # Bazel resolves --python_path to "python" if unset.
+    build_setting_default = "python",
     visibility = ["//visibility:public"],
 )
 

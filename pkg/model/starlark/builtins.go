@@ -6,6 +6,7 @@ import (
 	"maps"
 	"slices"
 	"sort"
+	"strings"
 
 	"bonanza.build/pkg/glob"
 	pg_label "bonanza.build/pkg/label"
@@ -75,12 +76,23 @@ const (
 	// Starlark thread that is evaluating a BUILD file. It is
 	// invoked when glob() directives are encountered.
 	GlobExpanderKey = "glob_expander"
+	// SubpackagesExpanderKey is the key under which an instance of
+	// SubpackagesExpander is stored in the thread local variables
+	// of a Starlark thread that is evaluating a BUILD file. It is
+	// invoked when native.subpackages() is called.
+	SubpackagesExpanderKey = "subpackages_expander"
 )
 
 // GlobExpander is invoked when a glob directive is encountered in a
 // BUILD file. It is responsible for performing the glob expansion and
 // returning relative pathnames that were matched.
 type GlobExpander = func(include, exclude []string, includeDirectories bool) ([]string, error)
+
+// SubpackagesExpander is invoked when native.subpackages() is called
+// from within a BUILD file. It is responsible for returning the paths
+// of direct subpackages of the current package that match the provided
+// patterns, relative to the current package.
+type SubpackagesExpander = func(include, exclude []string) ([]string, error)
 
 func labelSetting[TReference object.BasicReference, TMetadata model_core.ReferenceMetadata](thread *starlark.Thread, b *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple, flag bool) (starlark.Value, error) {
 	targetRegistrar := thread.Local(TargetRegistrarKey).(*TargetRegistrar[TReference, TMetadata])
@@ -144,6 +156,20 @@ func stringDictToStructFields(in starlark.StringDict) map[string]any {
 	return out
 }
 
+// existingRuleToDict converts information on a previously instantiated
+// rule target to a Starlark dict, so that it can be returned by
+// native.existing_rule() and native.existing_rules().
+func existingRuleToDict(thread *starlark.Thread, existingRule map[string]starlark.Value) (starlark.Value, error) {
+	result := starlark.NewDict(len(existingRule))
+	for _, key := range slices.Sorted(maps.Keys(existingRule)) {
+		if err := result.SetKey(thread, starlark.String(key), existingRule[key]); err != nil {
+			return nil, err
+		}
+	}
+	result.Freeze()
+	return result, nil
+}
+
 var (
 	configurationAttrIdentifier = util.Must(pg_label.NewStarlarkIdentifier("__configuration"))
 	configurationFragmentLabel  = util.Must(pg_label.NewCanonicalLabel("@@bazel_tools+//fragments:configuration"))
@@ -178,7 +204,7 @@ func convertFragmentsToAttr[TReference object.BasicReference, TMetadata model_co
 			)
 		}
 		attrs[fragmentsAttrIdentifier] = NewAttr[TReference, TMetadata](
-			NewLabelListAttrType[TReference, TMetadata](glob.NFAMatchingNothing.Bytes(), cfg),
+			NewLabelListAttrType[TReference, TMetadata](glob.NFAMatchingNothing.Bytes(), cfg, nil),
 			starlark.NewList(fragmentsLabels),
 		)
 	}
@@ -207,36 +233,191 @@ func GetBuiltins[TReference object.BasicReference, TMetadata model_core.Referenc
 	)
 
 	configurationAttr := NewAttr[TReference, TMetadata](
-		NewLabelAttrType[TReference, TMetadata](false, false, false, glob.NFAMatchingNothing.Bytes(), targetTransitionDefinition),
+		NewLabelAttrType[TReference, TMetadata](false, false, false, glob.NFAMatchingNothing.Bytes(), targetTransitionDefinition, nil),
 		NewLabel[TReference, TMetadata](configurationFragmentLabel.AsResolved()),
 	)
 	defaultToolchainsAttr := NewAttr[TReference, TMetadata](
-		NewLabelListAttrType[TReference, TMetadata](glob.NFAMatchingNothing.Bytes(), targetTransitionDefinition),
+		NewLabelListAttrType[TReference, TMetadata](glob.NFAMatchingNothing.Bytes(), targetTransitionDefinition, nil),
 		starlark.NewList([]starlark.Value{
 			NewLabel[TReference, TMetadata](defaultMakeVariablesLabel.AsResolved()),
 		}),
 	)
 	toolchainsAttr := NewAttr[TReference, TMetadata](
-		NewLabelListAttrType[TReference, TMetadata](glob.NFAMatchingNothing.Bytes(), targetTransitionDefinition),
+		NewLabelListAttrType[TReference, TMetadata](glob.NFAMatchingNothing.Bytes(), targetTransitionDefinition, nil),
 		starlark.NewList(nil),
 	)
 	targetPlatformAttr := NewAttr[TReference, TMetadata](
-		NewLabelAttrType[TReference, TMetadata](false, false, false, glob.NFAMatchingNothing.Bytes(), targetTransitionDefinition),
+		NewLabelAttrType[TReference, TMetadata](false, false, false, glob.NFAMatchingNothing.Bytes(), targetTransitionDefinition, nil),
 		NewLabel[TReference, TMetadata](commandLineOptionPlatformsLabel.AsResolved()),
 	)
+
+	// newRuleDefinition contains the logic for constructing rule
+	// definitions that is shared between rule() and
+	// testing.analysis_test(). It takes ownership of attrs, adding
+	// implicit attributes to it as needed.
+	newRuleDefinition := func(
+		implementation NamedFunction[TReference, TMetadata],
+		attrs map[pg_label.StarlarkIdentifier]*Attr[TReference, TMetadata],
+		buildSetting *BuildSetting,
+		cfg TransitionDefinition[TReference, TMetadata],
+		execCompatibleWith []pg_label.ResolvedLabel,
+		execGroups map[string]*ExecGroup[TReference, TMetadata],
+		fragments []pg_label.TargetName,
+		initializer *NamedFunction[TReference, TMetadata],
+		needs []string,
+		outputs map[pg_label.StarlarkIdentifier]string,
+		provides []*Provider[TReference, TMetadata],
+		subrules []*Subrule[TReference, TMetadata],
+		test bool,
+		toolchains []*ToolchainType[TReference, TMetadata],
+	) (RuleDefinition[TReference, TMetadata], error) {
+		// Bazel provides a set of common attributes to
+		// all test rules, which their implementation
+		// functions may access through ctx.attr.
+		if test {
+			for name, attr := range map[pg_label.StarlarkIdentifier]*Attr[TReference, TMetadata]{
+				util.Must(pg_label.NewStarlarkIdentifier("size")):        NewAttr[TReference, TMetadata](NewStringAttrType[TReference, TMetadata](nil), starlark.String("medium")),
+				util.Must(pg_label.NewStarlarkIdentifier("timeout")):     NewAttr[TReference, TMetadata](NewStringAttrType[TReference, TMetadata](nil), starlark.String("")),
+				util.Must(pg_label.NewStarlarkIdentifier("flaky")):       NewAttr[TReference, TMetadata](NewBoolAttrType[TReference, TMetadata](), starlark.Bool(false)),
+				util.Must(pg_label.NewStarlarkIdentifier("local")):       NewAttr[TReference, TMetadata](NewBoolAttrType[TReference, TMetadata](), starlark.Bool(false)),
+				util.Must(pg_label.NewStarlarkIdentifier("shard_count")): NewAttr[TReference, TMetadata](NewIntAttrType[TReference, TMetadata](nil), starlark.MakeInt(-1)),
+			} {
+				if _, ok := attrs[name]; !ok {
+					attrs[name] = attr
+				}
+			}
+		}
+
+		needsConfiguration := needs == nil
+		needsDefaultExecGroup := needs == nil
+		needsMakeVariables := needs == nil
+		needsTargetPlatform := needs == nil
+		for _, need := range needs {
+			switch need {
+			case "configuration":
+				needsConfiguration = true
+			case "default_exec_group":
+				needsDefaultExecGroup = true
+			case "make_variables":
+				needsMakeVariables = true
+			case "targetPlatform":
+				needsTargetPlatform = true
+			default:
+				return nil, fmt.Errorf("unknown \"needs\" option %#v", need)
+			}
+		}
+
+		// Whether or not to provide ctx.configuration.
+		if _, ok := attrs[configurationAttrIdentifier]; ok {
+			return nil, fmt.Errorf("attr %#v cannot be declared explicitly", configurationAttrIdentifier.String())
+		}
+		if needsConfiguration {
+			attrs[configurationAttrIdentifier] = configurationAttr
+		}
+
+		// Some of the core rules like config_setting(),
+		// constraint_value(), and platform() don't
+		// perform any execution. We don't want to give
+		// those rules any exec groups, because that
+		// would cause cyclic dependencies during
+		// evaluation. Omit the default exec group for
+		// such rules.
+		if needsDefaultExecGroup {
+			if _, ok := execGroups[""]; ok {
+				return nil, errors.New("cannot explicitly declare exec_group with name \"\"")
+			}
+			execGroups[""] = NewExecGroup(execCompatibleWith, toolchains)
+
+			// Test rules implicitly have a "test"
+			// exec group in which the test action
+			// runs, inheriting the constraints of
+			// the default exec group.
+			if test {
+				if _, ok := execGroups["test"]; !ok {
+					execGroups["test"] = NewExecGroup(execCompatibleWith, toolchains)
+				}
+			}
+		} else if len(execCompatibleWith) > 0 || len(toolchains) > 0 {
+			return nil, fmt.Errorf("default_exec_group=False is incompatible with the exec_compatible_with and toolchains options")
+		}
+
+		// Convert predeclared outputs to
+		// attr.output(), with the filename
+		// template as the attr's default value.
+		for name, template := range outputs {
+			if _, ok := attrs[name]; ok {
+				return nil, fmt.Errorf("predeclared output %#v has the same name as existing attr", name)
+			}
+			attrs[name] = NewAttr[TReference, TMetadata](NewOutputAttrType[TReference, TMetadata](template), starlark.String(template))
+		}
+
+		if err := convertFragmentsToAttr(fragments, attrs, targetTransitionDefinition); err != nil {
+			return nil, err
+		}
+
+		// Implicitly add "__default_toolchains" and
+		// "toolchains" attributes. These point to
+		// targets providing TemplateVariableInfo,
+		// which is used to populate ctx.var.
+		//
+		// To prevent dependency cyles, we shouldn't
+		// add these to rules that opt out.
+		if _, ok := attrs[defaultToolchainsAttrIdentifier]; ok {
+			return nil, fmt.Errorf("attr %#v cannot be declared explicitly", defaultToolchainsAttrIdentifier.String())
+		}
+		if _, ok := attrs[toolchainsAttrIdentifier]; ok {
+			return nil, fmt.Errorf("attr %#v cannot be declared explicitly", toolchainsAttrIdentifier.String())
+		}
+		if needsMakeVariables {
+			attrs[defaultToolchainsAttrIdentifier] = defaultToolchainsAttr
+			attrs[toolchainsAttrIdentifier] = toolchainsAttr
+		}
+
+		// Implicitly add "__target_platforms" for
+		// ctx.target_platform_has_constraint().
+		if _, ok := attrs[targetPlatformAttrIdentifier]; ok {
+			return nil, fmt.Errorf("attr %#v cannot be declared explicitly", targetPlatformAttrIdentifier.String())
+		}
+		if needsTargetPlatform {
+			attrs[targetPlatformAttrIdentifier] = targetPlatformAttr
+		}
+
+		return NewStarlarkRuleDefinition(
+			attrs,
+			buildSetting,
+			cfg,
+			execGroups,
+			implementation,
+			initializer,
+			provides,
+			test,
+			subrules,
+		), nil
+	}
 
 	bzlFileBuiltins := starlark.StringDict{
 		"analysis_test_transition": starlark.NewBuiltin(
 			"analysis_test_transition",
 			func(thread *starlark.Thread, b *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
-				var settings map[string]string
+				var settings map[string]starlark.Value
 				if err := starlark.UnpackArgs(
 					b.Name(), args, kwargs,
-					"settings", unpack.Bind(thread, &settings, unpack.Dict(unpack.String, unpack.String)),
+					// Don't convert the keys to labels. The
+					// provided strings should not be normalized,
+					// as they are resolved relative to the
+					// package declaring the transition when the
+					// transition is applied.
+					"settings", unpack.Bind(thread, &settings, unpack.Dict(unpack.String, unpack.Any)),
 				); err != nil {
 					return nil, err
 				}
-				return nil, errors.New("not implemented")
+				return NewTransition(
+					NewAnalysisTestTransitionDefinition[TReference, TMetadata](
+						nil,
+						settings,
+						CurrentFilePackage(thread, 1),
+					),
+				), nil
 			},
 		),
 		"aspect": starlark.NewBuiltin(
@@ -274,7 +455,10 @@ func GetBuiltins[TReference object.BasicReference, TMetadata model_core.Referenc
 				); err != nil {
 					return nil, err
 				}
-				return NewAspect[TReference, TMetadata](nil, &model_starlark_pb.Aspect_Definition{}), nil
+				// TODO: attrs, requires, required_providers,
+				// required_aspect_providers, provides and
+				// toolchains are currently parsed, but ignored.
+				return NewAspect[TReference, TMetadata](nil, NewStarlarkAspectDefinition(attrAspects, implementation)), nil
 			},
 		),
 		"attr": NewStructFromDict[TReference, TMetadata](nil, map[string]any{
@@ -350,6 +534,45 @@ func GetBuiltins[TReference object.BasicReference, TMetadata model_core.Referenc
 					return NewAttr[TReference, TMetadata](attrType, defaultValue), nil
 				},
 			),
+			"int_list": starlark.NewBuiltin(
+				"attr.int_list",
+				func(thread *starlark.Thread, b *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
+					if len(args) > 2 {
+						return nil, fmt.Errorf("%s: got %d positional arguments, want at most 2", b.Name(), len(args))
+					}
+
+					allowEmpty := true
+					configurable := true
+					var defaultValue starlark.Value = starlark.NewList(nil)
+					doc := ""
+					mandatory := false
+					if err := starlark.UnpackArgs(
+						b.Name(), args, kwargs,
+						// Positional arguments.
+						"mandatory?", unpack.Bind(thread, &mandatory, unpack.Bool),
+						"allow_empty?", unpack.Bind(thread, &allowEmpty, unpack.Bool),
+						// Keyword arguments.
+						"configurable?", unpack.Bind(thread, &configurable, unpack.Bool),
+						"default?", &defaultValue,
+						"doc?", unpack.Bind(thread, &doc, unpack.String),
+					); err != nil {
+						return nil, err
+					}
+
+					attrType := NewIntListAttrType[TReference, TMetadata]()
+					if mandatory {
+						defaultValue = nil
+					} else {
+						if err := unpack.Or([]unpack.UnpackerInto[starlark.Value]{
+							unpack.Canonicalize(namedFunctionUnpackerInto),
+							unpack.Canonicalize(attrType.GetCanonicalizer(CurrentFilePackage(thread, 1))),
+						}).UnpackInto(thread, defaultValue, &defaultValue); err != nil {
+							return nil, fmt.Errorf("%s: for parameter default: %w", b.Name(), err)
+						}
+					}
+					return NewAttr[TReference, TMetadata](attrType, defaultValue), nil
+				},
+			),
 			"label": starlark.NewBuiltin(
 				"attr.label",
 				func(thread *starlark.Thread, b *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
@@ -401,7 +624,7 @@ func GetBuiltins[TReference object.BasicReference, TMetadata model_core.Referenc
 						cfg = targetTransitionDefinition
 					}
 
-					attrType := NewLabelAttrType[TReference, TMetadata](!mandatory, allowSingleFile != nil, executable, allowFiles.Bytes(), cfg)
+					attrType := NewLabelAttrType[TReference, TMetadata](!mandatory, allowSingleFile != nil, executable, allowFiles.Bytes(), cfg, aspects)
 					if mandatory {
 						defaultValue = nil
 					} else {
@@ -448,7 +671,7 @@ func GetBuiltins[TReference object.BasicReference, TMetadata model_core.Referenc
 						return nil, err
 					}
 
-					attrType := NewLabelKeyedStringDictAttrType[TReference, TMetadata](allowFiles.Bytes(), cfg)
+					attrType := NewLabelKeyedStringDictAttrType[TReference, TMetadata](allowFiles.Bytes(), cfg, aspects)
 					if mandatory {
 						defaultValue = nil
 					} else {
@@ -499,7 +722,7 @@ func GetBuiltins[TReference object.BasicReference, TMetadata model_core.Referenc
 						return nil, err
 					}
 
-					attrType := NewLabelListAttrType[TReference, TMetadata](allowFiles.Bytes(), cfg)
+					attrType := NewLabelListAttrType[TReference, TMetadata](allowFiles.Bytes(), cfg, aspects)
 					if mandatory {
 						defaultValue = nil
 					} else {
@@ -666,7 +889,7 @@ func GetBuiltins[TReference object.BasicReference, TMetadata model_core.Referenc
 						return nil, err
 					}
 
-					attrType := NewStringKeyedLabelDictAttrType[TReference, TMetadata](allowFiles.Bytes(), cfg)
+					attrType := NewStringKeyedLabelDictAttrType[TReference, TMetadata](allowFiles.Bytes(), cfg, aspects)
 					if mandatory {
 						defaultValue = nil
 					} else {
@@ -687,18 +910,18 @@ func GetBuiltins[TReference object.BasicReference, TMetadata model_core.Referenc
 						return nil, fmt.Errorf("%s: got %d positional arguments, want at most 2", b.Name(), len(args))
 					}
 
-					mandatory := false
-					var allowEmpty bool
+					allowEmpty := true
 					configurable := true
 					var defaultValue starlark.Value = starlark.NewList(nil)
 					doc := ""
+					mandatory := false
 					if err := starlark.UnpackArgs(
 						b.Name(), args, kwargs,
 						// Positional arguments.
-						"configurable?", unpack.Bind(thread, &configurable, unpack.Bool),
 						"mandatory?", unpack.Bind(thread, &mandatory, unpack.Bool),
 						"allow_empty?", unpack.Bind(thread, &allowEmpty, unpack.Bool),
 						// Keyword arguments.
+						"configurable?", unpack.Bind(thread, &configurable, unpack.Bool),
 						"default?", &defaultValue,
 						"doc?", unpack.Bind(thread, &doc, unpack.String),
 					); err != nil {
@@ -1123,6 +1346,69 @@ func GetBuiltins[TReference object.BasicReference, TMetadata model_core.Referenc
 					return currentCtx.(starlark.Value), nil
 				},
 			),
+			"existing_rule": starlark.NewBuiltin(
+				"native.existing_rule",
+				func(thread *starlark.Thread, b *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
+					var name string
+					if err := starlark.UnpackArgs(
+						b.Name(), args, kwargs,
+						"name", unpack.Bind(thread, &name, unpack.String),
+					); err != nil {
+						return nil, err
+					}
+
+					if targetRegistrar, ok := thread.Local(TargetRegistrarKey).(*TargetRegistrar[TReference, TMetadata]); ok && targetRegistrar != nil {
+						existingRule := targetRegistrar.GetExistingRule(name)
+						if existingRule == nil {
+							return starlark.None, nil
+						}
+						return existingRuleToDict(thread, existingRule)
+					}
+					if repoRegistrar, ok := thread.Local(RepoRegistrarKey).(*RepoRegistrar[TMetadata]); ok && repoRegistrar != nil {
+						// Within module extensions, report
+						// repos that were declared by the
+						// extension so far.
+						existingRepo := repoRegistrar.GetExistingRepo(thread, name)
+						if existingRepo == nil {
+							return starlark.None, nil
+						}
+						return existingRuleToDict(thread, existingRepo)
+					}
+					return nil, errors.New("existing rules cannot be obtained from within this context")
+				},
+			),
+			"existing_rules": starlark.NewBuiltin(
+				"native.existing_rules",
+				func(thread *starlark.Thread, b *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
+					if err := starlark.UnpackArgs(b.Name(), args, kwargs); err != nil {
+						return nil, err
+					}
+
+					var existingRules map[string]map[string]starlark.Value
+					if targetRegistrar, ok := thread.Local(TargetRegistrarKey).(*TargetRegistrar[TReference, TMetadata]); ok && targetRegistrar != nil {
+						existingRules = targetRegistrar.GetExistingRules()
+					} else if repoRegistrar, ok := thread.Local(RepoRegistrarKey).(*RepoRegistrar[TMetadata]); ok && repoRegistrar != nil {
+						// Within module extensions, report
+						// repos that were declared by the
+						// extension so far.
+						existingRules = repoRegistrar.GetExistingRepos(thread)
+					} else {
+						return nil, errors.New("existing rules cannot be obtained from within this context")
+					}
+
+					result := starlark.NewDict(len(existingRules))
+					for _, name := range slices.Sorted(maps.Keys(existingRules)) {
+						existingRule, err := existingRuleToDict(thread, existingRules[name])
+						if err != nil {
+							return nil, err
+						}
+						if err := result.SetKey(thread, starlark.String(name), existingRule); err != nil {
+							return nil, err
+						}
+					}
+					return result, nil
+				},
+			),
 			"exports_files": starlark.NewBuiltin(
 				"native.exports_files",
 				func(thread *starlark.Thread, b *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
@@ -1235,6 +1521,51 @@ func GetBuiltins[TReference object.BasicReference, TMetadata model_core.Referenc
 					return labelSetting[TReference, TMetadata](thread, b, args, kwargs, false)
 				},
 			),
+			"module_name": starlark.NewBuiltin(
+				"native.module_name",
+				func(thread *starlark.Thread, b *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
+					canonicalPackage := thread.Local(CanonicalPackageKey)
+					if canonicalPackage == nil {
+						return nil, errors.New("module name cannot be obtained from within this context")
+					}
+
+					if err := starlark.UnpackArgs(b.Name(), args, kwargs); err != nil {
+						return nil, err
+					}
+
+					// Return the name of the module associated
+					// with the repo of the package that is
+					// currently being evaluated. For repos that
+					// are created by module extensions, this
+					// yields the name of the module hosting the
+					// extension.
+					moduleInstance := canonicalPackage.(pg_label.CanonicalPackage).
+						GetCanonicalRepo().
+						GetModuleInstance()
+					return starlark.String(moduleInstance.GetModule().String()), nil
+				},
+			),
+			"module_version": starlark.NewBuiltin(
+				"native.module_version",
+				func(thread *starlark.Thread, b *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
+					canonicalPackage := thread.Local(CanonicalPackageKey)
+					if canonicalPackage == nil {
+						return nil, errors.New("module version cannot be obtained from within this context")
+					}
+
+					if err := starlark.UnpackArgs(b.Name(), args, kwargs); err != nil {
+						return nil, err
+					}
+
+					moduleInstance := canonicalPackage.(pg_label.CanonicalPackage).
+						GetCanonicalRepo().
+						GetModuleInstance()
+					if moduleVersion, ok := moduleInstance.GetModuleVersion(); ok {
+						return starlark.String(moduleVersion.String()), nil
+					}
+					return starlark.None, nil
+				},
+			),
 			"package_group": starlark.NewBuiltin(
 				"native.package_group",
 				func(thread *starlark.Thread, b *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
@@ -1315,6 +1646,74 @@ func GetBuiltins[TReference object.BasicReference, TMetadata model_core.Referenc
 						return nil, err
 					}
 					return NewLabel[TReference, TMetadata](input), nil
+				},
+			),
+			"repo_name": starlark.NewBuiltin(
+				"native.repo_name",
+				func(thread *starlark.Thread, b *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
+					canonicalPackage := thread.Local(CanonicalPackageKey)
+					if canonicalPackage == nil {
+						return nil, errors.New("repo name cannot be obtained from within this context")
+					}
+
+					if err := starlark.UnpackArgs(b.Name(), args, kwargs); err != nil {
+						return nil, err
+					}
+
+					return starlark.String(canonicalPackage.(pg_label.CanonicalPackage).GetCanonicalRepo().String()), nil
+				},
+			),
+			"repository_name": starlark.NewBuiltin(
+				"native.repository_name",
+				func(thread *starlark.Thread, b *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
+					// Deprecated predecessor of
+					// native.repo_name() that prefixes the
+					// canonical repo name with a single "@".
+					canonicalPackage := thread.Local(CanonicalPackageKey)
+					if canonicalPackage == nil {
+						return nil, errors.New("repository name cannot be obtained from within this context")
+					}
+
+					if err := starlark.UnpackArgs(b.Name(), args, kwargs); err != nil {
+						return nil, err
+					}
+
+					return starlark.String("@" + canonicalPackage.(pg_label.CanonicalPackage).GetCanonicalRepo().String()), nil
+				},
+			),
+			"subpackages": starlark.NewBuiltin(
+				"native.subpackages",
+				func(thread *starlark.Thread, b *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
+					subpackagesExpander := thread.Local(SubpackagesExpanderKey)
+					if subpackagesExpander == nil {
+						return nil, errors.New("subpackages cannot be expanded within this context")
+					}
+
+					var include []string
+					var exclude []string
+					allowEmpty := false
+					if err := starlark.UnpackArgs(
+						b.Name(), args, kwargs,
+						"include", unpack.Bind(thread, &include, unpack.List(unpack.String)),
+						"exclude?", unpack.Bind(thread, &exclude, unpack.List(unpack.String)),
+						"allow_empty?", unpack.Bind(thread, &allowEmpty, unpack.Bool),
+					); err != nil {
+						return nil, err
+					}
+
+					subpackages, err := subpackagesExpander.(SubpackagesExpander)(include, exclude)
+					if err != nil {
+						return nil, err
+					}
+					if len(subpackages) == 0 && !allowEmpty {
+						return nil, errors.New("subpackages() does not match any subpackages")
+					}
+
+					elements := make([]starlark.Value, 0, len(subpackages))
+					for _, subpackage := range subpackages {
+						elements = append(elements, starlark.String(subpackage))
+					}
+					return starlark.NewList(elements), nil
 				},
 			),
 		}),
@@ -1424,6 +1823,7 @@ func GetBuiltins[TReference object.BasicReference, TMetadata model_core.Referenc
 				outputs := map[pg_label.StarlarkIdentifier]string{}
 				var provides []*Provider[TReference, TMetadata]
 				var subrules []*Subrule[TReference, TMetadata]
+				analysisTest := false
 				test := false
 				var toolchains []*ToolchainType[TReference, TMetadata]
 				skylarkTestable := false
@@ -1432,6 +1832,7 @@ func GetBuiltins[TReference object.BasicReference, TMetadata model_core.Referenc
 					// Positional arguments.
 					"implementation", unpack.Bind(thread, &implementation, namedFunctionUnpackerInto),
 					// Keyword arguments.
+					"analysis_test?", unpack.Bind(thread, &analysisTest, unpack.Bool),
 					"attrs?", unpack.Bind(thread, &attrs, unpack.Dict(unpack.StarlarkIdentifier, unpack.Type[*Attr[TReference, TMetadata]]("attr.*"))),
 					"build_setting?", unpack.Bind(thread, &buildSetting, unpack.IfNotNone(unpack.Type[*BuildSetting]("config.*"))),
 					"cfg?", unpack.Bind(thread, &cfg, transitionDefinitionUnpackerInto),
@@ -1452,101 +1853,36 @@ func GetBuiltins[TReference object.BasicReference, TMetadata model_core.Referenc
 					return nil, err
 				}
 
-				needsConfiguration := needs == nil
-				needsDefaultExecGroup := needs == nil
-				needsMakeVariables := needs == nil
-				needsTargetPlatform := needs == nil
-				for _, need := range needs {
-					switch need {
-					case "configuration":
-						needsConfiguration = true
-					case "default_exec_group":
-						needsDefaultExecGroup = true
-					case "make_variables":
-						needsMakeVariables = true
-					case "targetPlatform":
-						needsTargetPlatform = true
-					default:
-						return nil, fmt.Errorf("unknown \"needs\" option %#v", need)
-					}
+				// Analysis test rules are test rules whose
+				// implementation runs entirely during the
+				// analysis phase. Bazel additionally restricts
+				// what such rules may do (e.g. the number of
+				// transitive dependencies); we accept them
+				// without imposing those restrictions.
+				if analysisTest {
+					test = true
 				}
 
-				// Whether or not to provide ctx.configuration.
-				if _, ok := attrs[configurationAttrIdentifier]; ok {
-					return nil, fmt.Errorf("attr %#v cannot be declared explicitly", configurationAttrIdentifier.String())
-				}
-				if needsConfiguration {
-					attrs[configurationAttrIdentifier] = configurationAttr
-				}
-
-				// Some of the core rules like config_setting(),
-				// constraint_value(), and platform() don't
-				// perform any execution. We don't want to give
-				// those rules any exec groups, because that
-				// would cause cyclic dependencies during
-				// evaluation. Omit the default exec group for
-				// such rules.
-				if needsDefaultExecGroup {
-					if _, ok := execGroups[""]; ok {
-						return nil, errors.New("cannot explicitly declare exec_group with name \"\"")
-					}
-					execGroups[""] = NewExecGroup(execCompatibleWith, toolchains)
-				} else if len(execCompatibleWith) > 0 || len(toolchains) > 0 {
-					return nil, fmt.Errorf("default_exec_group=False is incompatible with the exec_compatible_with and toolchains options")
-				}
-
-				// Convert predeclared outputs to
-				// attr.output(), with the filename
-				// template as the attr's default value.
-				for name, template := range outputs {
-					if _, ok := attrs[name]; ok {
-						return nil, fmt.Errorf("predeclared output %#v has the same name as existing attr", name)
-					}
-					attrs[name] = NewAttr[TReference, TMetadata](NewOutputAttrType[TReference, TMetadata](template), starlark.String(template))
-				}
-
-				if err := convertFragmentsToAttr(fragments, attrs, targetTransitionDefinition); err != nil {
-					return nil, err
-				}
-
-				// Implicitly add "__default_toolchains" and
-				// "toolchains" attributes. These point to
-				// targets providing TemplateVariableInfo,
-				// which is used to populate ctx.var.
-				//
-				// To prevent dependency cyles, we shouldn't
-				// add these to rules that opt out.
-				if _, ok := attrs[defaultToolchainsAttrIdentifier]; ok {
-					return nil, fmt.Errorf("attr %#v cannot be declared explicitly", defaultToolchainsAttrIdentifier.String())
-				}
-				if _, ok := attrs[toolchainsAttrIdentifier]; ok {
-					return nil, fmt.Errorf("attr %#v cannot be declared explicitly", toolchainsAttrIdentifier.String())
-				}
-				if needsMakeVariables {
-					attrs[defaultToolchainsAttrIdentifier] = defaultToolchainsAttr
-					attrs[toolchainsAttrIdentifier] = toolchainsAttr
-				}
-
-				// Implicitly add "__target_platforms" for
-				// ctx.target_platform_has_constraint().
-				if _, ok := attrs[targetPlatformAttrIdentifier]; ok {
-					return nil, fmt.Errorf("attr %#v cannot be declared explicitly", targetPlatformAttrIdentifier.String())
-				}
-				if needsTargetPlatform {
-					attrs[targetPlatformAttrIdentifier] = targetPlatformAttr
-				}
-
-				return NewRule(nil, NewStarlarkRuleDefinition(
+				definition, err := newRuleDefinition(
+					implementation,
 					attrs,
 					buildSetting,
 					cfg,
+					execCompatibleWith,
 					execGroups,
-					implementation,
+					fragments,
 					initializer,
+					needs,
+					outputs,
 					provides,
-					test,
 					subrules,
-				)), nil
+					test,
+					toolchains,
+				)
+				if err != nil {
+					return nil, err
+				}
+				return NewRule(nil, definition), nil
 			},
 		),
 		"struct": starlark.NewBuiltin(
@@ -1617,6 +1953,80 @@ func GetBuiltins[TReference object.BasicReference, TMetadata model_core.Referenc
 				return NewTagClass(NewStarlarkTagClassDefinition[TReference, TMetadata](attrs)), nil
 			},
 		),
+		"testing": NewStructFromDict[TReference, TMetadata](nil, map[string]any{
+			"analysis_test": starlark.NewBuiltin(
+				"testing.analysis_test",
+				func(thread *starlark.Thread, b *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
+					if len(args) > 2 {
+						return nil, fmt.Errorf("%s: got %d positional arguments, want at most 2", b.Name(), len(args))
+					}
+					var name string
+					var implementation NamedFunction[TReference, TMetadata]
+					attrs := map[pg_label.StarlarkIdentifier]*Attr[TReference, TMetadata]{}
+					var fragments []pg_label.TargetName
+					var toolchains []*ToolchainType[TReference, TMetadata]
+					var attrValues map[string]starlark.Value
+					if err := starlark.UnpackArgs(
+						b.Name(), args, kwargs,
+						// Positional arguments.
+						"name", unpack.Bind(thread, &name, unpack.Stringer(unpack.TargetName)),
+						"implementation", unpack.Bind(thread, &implementation, namedFunctionUnpackerInto),
+						// Keyword arguments.
+						"attrs?", unpack.Bind(thread, &attrs, unpack.Dict(unpack.StarlarkIdentifier, unpack.Type[*Attr[TReference, TMetadata]]("attr.*"))),
+						"fragments?", unpack.Bind(thread, &fragments, unpack.List(unpack.TargetName)),
+						"toolchains?", unpack.Bind(thread, &toolchains, unpack.List(toolchainTypeUnpackerInto)),
+						"attr_values?", unpack.Bind(thread, &attrValues, unpack.Dict(unpack.String, unpack.Any)),
+					); err != nil {
+						return nil, err
+					}
+
+					// The rule definition is embedded into
+					// the target, which can only refer to
+					// the implementation function if it
+					// lives in a .bzl file. Reject BUILD
+					// file functions here, as encoding only
+					// detects ones belonging to the file
+					// currently being compiled.
+					if filename := implementation.Position().Filename(); !strings.HasSuffix(filename, ".bzl") {
+						return nil, fmt.Errorf("%s: implementation function is declared in %#v, while it should be declared in a .bzl file", b.Name(), filename)
+					}
+
+					definition, err := newRuleDefinition(
+						implementation,
+						attrs,
+						/* buildSetting = */ nil,
+						targetTransitionDefinition,
+						/* execCompatibleWith = */ nil,
+						map[string]*ExecGroup[TReference, TMetadata]{},
+						fragments,
+						/* initializer = */ nil,
+						/* needs = */ nil,
+						/* outputs = */ map[pg_label.StarlarkIdentifier]string{},
+						/* provides = */ nil,
+						/* subrules = */ nil,
+						/* test = */ true,
+						toolchains,
+					)
+					if err != nil {
+						return nil, err
+					}
+
+					// Instantiate the anonymous rule
+					// immediately, registering a target
+					// with the provided name and attribute
+					// values.
+					ruleKwargs := make([]starlark.Tuple, 0, len(attrValues)+1)
+					ruleKwargs = append(ruleKwargs, starlark.Tuple{starlark.String("name"), starlark.String(name)})
+					for _, attrName := range slices.Sorted(maps.Keys(attrValues)) {
+						if attrName == "name" {
+							return nil, fmt.Errorf("%s: attr_values contains reserved key \"name\"", b.Name())
+						}
+						ruleKwargs = append(ruleKwargs, starlark.Tuple{starlark.String(attrName), attrValues[attrName]})
+					}
+					return starlark.Call(thread, NewAnonymousRule(definition), nil, ruleKwargs)
+				},
+			),
+		}),
 		"transition": starlark.NewBuiltin(
 			"transition",
 			func(thread *starlark.Thread, b *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
