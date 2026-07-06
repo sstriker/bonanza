@@ -131,6 +131,23 @@ def _run_environment_info_init(environment = {}, inherited_environment = []):
 
 RunEnvironmentInfo, _RunEnvironmentInfoRaw = provider(init = _run_environment_info_init)
 
+def _testing_test_environment(environment = {}, inherited_environment = []):
+    # Deprecated alias for RunEnvironmentInfo that, unlike the
+    # provider, may be invoked with positional arguments. Still used
+    # by rules_testing's tests.
+    return RunEnvironmentInfo(
+        environment = environment,
+        inherited_environment = inherited_environment,
+    )
+
+def _testing_execution_info(requirements = {}, exec_group = "test"):
+    # Bazel's testing.ExecutionInfo is a function accepting positional
+    # arguments, not the provider itself.
+    return ExecutionInfo(
+        requirements = requirements,
+        exec_group = exec_group,
+    )
+
 def _template_variable_info_init(variables):
     return {"variables": variables}
 
@@ -1644,7 +1661,8 @@ exported_toplevels = {
         incompatible_enable_proto_toolchain_resolution = proto_common_do_not_use_incompatible_enable_proto_toolchain_resolution,
     ),
     "testing": struct(
-        ExecutionInfo = ExecutionInfo,
+        ExecutionInfo = _testing_execution_info,
+        TestEnvironment = _testing_test_environment,
         analysis_test = testing.analysis_test,
     ),
 }
