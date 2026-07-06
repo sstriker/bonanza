@@ -866,6 +866,11 @@ func (c *baseComputer[TReference, TMetadata]) performUserDefinedTransitionCached
 		// it does not have an identifier. This prevents us from
 		// calling the UserDefinedTransition function, as it
 		// expects an identifier.
+	case *model_starlark_pb.Transition_UserDefined_AnalysisTest_:
+		// Transition created through analysis_test_transition()
+		// that was declared inline. Just like inline transition
+		// definitions these have no identifier, so proceed to
+		// applying it directly.
 	default:
 		return performAndApplyUserDefinedTransitionResult[TMetadata]{}, errors.New("user-defined transition has an unknown type")
 	}
