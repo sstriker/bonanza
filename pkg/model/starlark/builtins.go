@@ -1715,6 +1715,24 @@ func GetBuiltins[TReference object.BasicReference, TMetadata model_core.Referenc
 					test = true
 				}
 
+				// Bazel provides a set of common attributes to
+				// all test rules, which their implementation
+				// functions may access through ctx.attr.
+				if test {
+					for name, attr := range map[pg_label.StarlarkIdentifier]*Attr[TReference, TMetadata]{
+						util.Must(pg_label.NewStarlarkIdentifier("size")):        NewAttr[TReference, TMetadata](NewStringAttrType[TReference, TMetadata](nil), starlark.String("medium")),
+						util.Must(pg_label.NewStarlarkIdentifier("timeout")):     NewAttr[TReference, TMetadata](NewStringAttrType[TReference, TMetadata](nil), starlark.String("")),
+						util.Must(pg_label.NewStarlarkIdentifier("flaky")):       NewAttr[TReference, TMetadata](NewBoolAttrType[TReference, TMetadata](), starlark.Bool(false)),
+						util.Must(pg_label.NewStarlarkIdentifier("local")):       NewAttr[TReference, TMetadata](NewBoolAttrType[TReference, TMetadata](), starlark.Bool(false)),
+						util.Must(pg_label.NewStarlarkIdentifier("shard_count")): NewAttr[TReference, TMetadata](NewIntAttrType[TReference, TMetadata](nil), starlark.MakeInt(-1)),
+					} {
+						if _, ok := attrs[name]; !ok {
+							attrs[name] = attr
+						}
+					}
+				}
+
+
 				needsConfiguration := needs == nil
 				needsDefaultExecGroup := needs == nil
 				needsMakeVariables := needs == nil

@@ -121,9 +121,9 @@ func (r *rule[TReference, TMetadata]) CallInternal(thread *starlark.Thread, args
 					return nil, fmt.Errorf("rule uses attribute with name %#v, which is reserved for build settings", nameStr)
 				}
 			case "args", "flaky", "local", "shard_count", "size", "timeout":
-				if test {
-					return nil, fmt.Errorf("rule uses attribute with name %#v, which is reserved for tests", nameStr)
-				}
+				// These attributes are implicitly provided to
+				// test rules, so that rule implementations may
+				// access them through ctx.attr.
 			}
 
 			attr := attrs[name]
