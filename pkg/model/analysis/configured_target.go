@@ -2810,6 +2810,7 @@ func (rca *ruleContextActions[TReference, TMetadata]) doRun(thread *starlark.Thr
 			inlinedtree.AlwaysInline(
 				model_core.NewReferenceMessagePatcher[TMetadata](),
 				func(actionDefinition model_core.PatchedMessage[*model_analysis_pb.TargetActionDefinition, TMetadata]) {
+					actionDefinition.Message.Mnemonic = mnemonic
 					actionDefinition.Message.PlatformPkixPublicKey = rc.execGroups[execGroupIndex].platformPkixPublicKey
 					actionDefinition.Message.UseDefaultShellEnv = useDefaultShellEnv
 				},

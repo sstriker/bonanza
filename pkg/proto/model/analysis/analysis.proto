@@ -600,6 +600,11 @@ message TargetActionDefinition {
   // operating system dependent variables as well as variables set via
   // --action_env.
   bool use_default_shell_env = 8;
+
+  // One-word description of the action, e.g. "CppCompile". This is
+  // exposed to aspects via target.actions[i].mnemonic. If empty, the
+  // default mnemonic "Action" is assumed.
+  string mnemonic = 9;
 }
 
 message TargetOutputDefinition {
