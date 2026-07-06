@@ -119,6 +119,31 @@
             "CompiledBzlFile"
          ]
       },
+      "ConfiguredAspect": {
+         "dependsOn": [
+            "ActionEncoderObject",
+            "BuiltinsModuleNames",
+            "CanonicalRepoName",
+            "CompiledBzlFileDecodedGlobals",
+            "CompiledBzlFileFunctionFactory",
+            "CompiledBzlFileGlobal",
+            "ConfiguredAspect",
+            "DirectoryCreationParametersObject",
+            "EmptyDefaultInfo",
+            "ExecTransition",
+            "FileCreationParametersObject",
+            "ResolvedToolchains",
+            "RootModule",
+            "RuleImplementationWrappers",
+            "Select",
+            "Target",
+            "TargetProvider",
+            "TargetProviders",
+            "UserDefinedTransition",
+            "VisibleTarget"
+         ],
+         "keyContainsReferences": true
+      },
       "ConfiguredTarget": {
          "dependsOn": [
             "ActionEncoderObject",
@@ -127,6 +152,7 @@
             "CompiledBzlFileDecodedGlobals",
             "CompiledBzlFileFunctionFactory",
             "CompiledBzlFileGlobal",
+            "ConfiguredAspect",
             "DirectoryCreationParametersObject",
             "EmptyDefaultInfo",
             "ExecTransition",

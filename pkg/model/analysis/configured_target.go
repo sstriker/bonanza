@@ -352,19 +352,21 @@ func (c *baseComputer[TReference, TMetadata]) configureAttrValueParts(
 	configurationReference model_core.Message[*model_core_pb.DecodableReference, TReference],
 	visibilityFromPackage label.CanonicalPackage,
 	execGroupPlatformLabels map[string]string,
+	extraAspectIdentifiers []string,
 ) (starlark.Value, error) {
 	// See if any transitions need to be applied.
-	var cfg *model_starlark_pb.Transition
+	var labelOptions *model_starlark_pb.Attr_LabelOptions
 	isScalar := false
 	switch attrType := namedAttr.Message.Attr.GetType().(type) {
 	case *model_starlark_pb.Attr_Label:
-		cfg = attrType.Label.ValueOptions.GetCfg()
+		labelOptions = attrType.Label.ValueOptions
 		isScalar = true
 	case *model_starlark_pb.Attr_LabelKeyedStringDict:
-		cfg = attrType.LabelKeyedStringDict.DictKeyOptions.GetCfg()
+		labelOptions = attrType.LabelKeyedStringDict.DictKeyOptions
 	case *model_starlark_pb.Attr_LabelList:
-		cfg = attrType.LabelList.ListValueOptions.GetCfg()
+		labelOptions = attrType.LabelList.ListValueOptions
 	}
+	cfg := labelOptions.GetCfg()
 
 	var configurationReferences []model_core.Message[*model_core_pb.DecodableReference, TReference]
 	mayHaveMultipleConfigurations := false
@@ -447,27 +449,28 @@ func (c *baseComputer[TReference, TMetadata]) configureAttrValueParts(
 					return nil, fmt.Errorf("invalid label %#v: %w", resolvedLabelStr, err)
 				}
 
-				// Obtain the providers of the target.
-				patchedConfigurationReference2 := model_core.Patch(e, configurationReference)
-				targetProviders := e.GetTargetProvidersValue(
-					model_core.NewPatchedMessage(
-						&model_analysis_pb.TargetProviders_Key{
-							Label:                  resolvedLabelStr,
-							ConfigurationReference: patchedConfigurationReference2.Message,
-						},
-						patchedConfigurationReference2.Patcher,
-					),
+				// Obtain the providers of the target,
+				// merged with those of any aspects that
+				// this attr requests.
+				providerInstances, err := getTargetProvidersWithAspects(
+					e,
+					resolvedLabelStr,
+					configurationReference,
+					slices.Concat(labelOptions.GetAspects(), extraAspectIdentifiers),
 				)
-				if !targetProviders.IsSet() {
-					missingDependencies = true
-					return starlark.None, nil
+				if err != nil {
+					if errors.Is(err, evaluation.ErrMissingDependency) {
+						missingDependencies = true
+						return starlark.None, nil
+					}
+					return nil, err
 				}
 
 				return model_starlark.NewTargetReference(
 					originalLabel,
 					model_starlark.NewConfiguredTargetReference[TReference, TMetadata](
 						resolvedLabel,
-						model_core.Nested(targetProviders, targetProviders.Message.ProviderInstances),
+						providerInstances,
 					),
 				), nil
 			})
@@ -1130,22 +1133,22 @@ func (c *baseComputer[TReference, TMetadata]) ComputeConfiguredTargetValue(ctx c
 							return nil, fmt.Errorf("invalid label %#v: %w", resolvedLabelStr, err)
 						}
 
-						// Obtain the providers of the target.
-						patchedConfigurationReference2 := model_core.Patch(e, outputConfigurationReference)
-						targetProviders := e.GetTargetProvidersValue(
-							model_core.NewPatchedMessage(
-								&model_analysis_pb.TargetProviders_Key{
-									Label:                  resolvedLabelStr,
-									ConfigurationReference: patchedConfigurationReference2.Message,
-								},
-								patchedConfigurationReference2.Patcher,
-							),
+						// Obtain the providers of the target,
+						// merged with those of any aspects
+						// that this attr requests.
+						providerInstances, err := getTargetProvidersWithAspects(
+							e,
+							resolvedLabelStr,
+							outputConfigurationReference,
+							labelOptions.GetAspects(),
 						)
-						if !targetProviders.IsSet() {
-							missingDependencies = true
-							return starlark.None, nil
+						if err != nil {
+							if errors.Is(err, evaluation.ErrMissingDependency) {
+								missingDependencies = true
+								return starlark.None, nil
+							}
+							return nil, err
 						}
-						providerInstances := model_core.Nested(targetProviders, targetProviders.Message.ProviderInstances)
 
 						// Keep track of dependencies whose
 						// analysis failed, so that their
@@ -1403,6 +1406,7 @@ func (c *baseComputer[TReference, TMetadata]) ComputeConfiguredTargetValue(ctx c
 					rc.configurationReference,
 					rc.ruleIdentifier.GetCanonicalLabel().GetCanonicalPackage(),
 					execGroupPlatformLabels,
+					/* extraAspectIdentifiers = */ nil,
 				)
 				if err != nil {
 					if errors.Is(err, evaluation.ErrMissingDependency) {
