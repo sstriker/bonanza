@@ -460,10 +460,26 @@ func (c *baseComputer[TReference, TMetadata]) ComputeConfiguredAspectValue(ctx c
 	propagateToAllAttrs := slices.Contains(attrAspects, "*")
 	extraAspectIdentifiers := append(slices.Clone(visibleRequiredAspectIdentifiers), aspectIdentifier.String())
 
-	// Note that any incoming edge transition of the rule is not
-	// reapplied here, and that select() expressions are resolved
-	// against the configuration in which the target is accessed.
+	// Recompute the attr values that need to be provided to any user
+	// defined transitions on label attrs, so that these transitions
+	// observe the same values as during target configuration.
+	edgeTransitionAttrValues, _, err := c.getEdgeTransitionAttrValues(
+		ctx,
+		thread,
+		targetLabel,
+		model_core.Nested(targetValue, ruleTarget),
+		ruleDefinition,
+	)
+	if err != nil {
+		return PatchedConfiguredAspectValue[TMetadata]{}, err
+	}
+
+	// First compute the values of all non-label attrs. Note that any
+	// incoming edge transition of the rule is not reapplied here, and
+	// that select() expressions are resolved against the
+	// configuration in which the target is accessed.
 	ruleTargetPublicAttrValues := ruleTarget.PublicAttrValues
+GetNonLabelAttrValues:
 	for _, namedAttr := range ruleDefinition.Message.Attrs {
 		var publicAttrValue *model_starlark_pb.RuleTarget_PublicAttrValue
 		if !strings.HasPrefix(namedAttr.Name, "_") {
@@ -472,6 +488,86 @@ func (c *baseComputer[TReference, TMetadata]) ComputeConfiguredAspectValue(ctx c
 			}
 			publicAttrValue = ruleTargetPublicAttrValues[0]
 			ruleTargetPublicAttrValues = ruleTargetPublicAttrValues[1:]
+		}
+
+		switch namedAttr.Attr.GetType().(type) {
+		case *model_starlark_pb.Attr_Label, *model_starlark_pb.Attr_LabelKeyedStringDict,
+			*model_starlark_pb.Attr_LabelList, *model_starlark_pb.Attr_StringKeyedLabelDict:
+			// Label attrs are computed in a second pass, as
+			// any user defined transitions applied to them
+			// need access to the values of the non-label
+			// attrs.
+			continue GetNonLabelAttrValues
+		}
+
+		valueParts, usedDefaultValue, err := getAttrValueParts(
+			e,
+			configurationReference,
+			targetPackage,
+			model_core.Nested(ruleDefinition, namedAttr),
+			model_core.Nested(targetValue, publicAttrValue),
+		)
+		if err != nil {
+			if errors.Is(err, evaluation.ErrMissingDependency) {
+				missingDependencies = true
+				continue
+			}
+			return PatchedConfiguredAspectValue[TMetadata]{}, fmt.Errorf("attr %#v: %w", namedAttr.Name, err)
+		}
+
+		// Whether an explicit value or a default attr value is
+		// used determines how visibility is computed, just like
+		// during target configuration.
+		visibilityFromPackage := targetPackage
+		if usedDefaultValue {
+			visibilityFromPackage = ruleIdentifier.GetCanonicalLabel().GetCanonicalPackage()
+		}
+		attrValue, err := c.configureAttrValueParts(
+			ctx,
+			e,
+			thread,
+			model_core.Nested(ruleDefinition, namedAttr),
+			valueParts,
+			configurationReference,
+			/* transitionAttrs = */ starlark.None,
+			visibilityFromPackage,
+			execGroupPlatformLabels,
+			/* extraAspectIdentifiers = */ nil,
+		)
+		if err != nil {
+			if errors.Is(err, evaluation.ErrMissingDependency) {
+				missingDependencies = true
+				continue
+			}
+			return PatchedConfiguredAspectValue[TMetadata]{}, fmt.Errorf("attr %#v: %w", namedAttr.Name, err)
+		}
+		attrValues[namedAttr.Name] = attrValue
+		edgeTransitionAttrValues[namedAttr.Name] = attrValue
+	}
+	if l := len(ruleTargetPublicAttrValues); l != 0 {
+		return PatchedConfiguredAspectValue[TMetadata]{}, fmt.Errorf("rule target has %d more public attr values than the rule definition has public attrs", l)
+	}
+
+	// User defined transitions may not observe a partially populated
+	// set of attr values, as that would make the result of applying
+	// them nondeterministic.
+	if missingDependencies {
+		return PatchedConfiguredAspectValue[TMetadata]{}, evaluation.ErrMissingDependency
+	}
+	edgeTransitionAttrValuesStruct := model_starlark.NewStructFromDict[TReference, TMetadata](nil, edgeTransitionAttrValues)
+
+	// Compute the values of all label attrs, applying any outgoing
+	// edge transitions.
+	ruleTargetPublicAttrValues = ruleTarget.PublicAttrValues
+	for _, namedAttr := range ruleDefinition.Message.Attrs {
+		var publicAttrValue *model_starlark_pb.RuleTarget_PublicAttrValue
+		if !strings.HasPrefix(namedAttr.Name, "_") {
+			publicAttrValue = ruleTargetPublicAttrValues[0]
+			ruleTargetPublicAttrValues = ruleTargetPublicAttrValues[1:]
+		}
+		if _, ok := attrValues[namedAttr.Name]; ok {
+			// Attr was already computed previously.
+			continue
 		}
 
 		valueParts, usedDefaultValue, err := getAttrValueParts(
@@ -507,6 +603,7 @@ func (c *baseComputer[TReference, TMetadata]) ComputeConfiguredAspectValue(ctx c
 			model_core.Nested(ruleDefinition, namedAttr),
 			valueParts,
 			configurationReference,
+			edgeTransitionAttrValuesStruct,
 			visibilityFromPackage,
 			execGroupPlatformLabels,
 			extraAspects,
@@ -519,9 +616,6 @@ func (c *baseComputer[TReference, TMetadata]) ComputeConfiguredAspectValue(ctx c
 			return PatchedConfiguredAspectValue[TMetadata]{}, fmt.Errorf("attr %#v: %w", namedAttr.Name, err)
 		}
 		attrValues[namedAttr.Name] = attrValue
-	}
-	if l := len(ruleTargetPublicAttrValues); l != 0 {
-		return PatchedConfiguredAspectValue[TMetadata]{}, fmt.Errorf("rule target has %d more public attr values than the rule definition has public attrs", l)
 	}
 
 	// Obtain the values of the aspect's own attrs, so that they can
@@ -548,6 +642,7 @@ func (c *baseComputer[TReference, TMetadata]) ComputeConfiguredAspectValue(ctx c
 			model_core.Nested(aspectDefinition, namedAttr),
 			model_core.Nested(aspectDefinition, []*model_starlark_pb.Value{defaultValue}),
 			configurationReference,
+			edgeTransitionAttrValuesStruct,
 			/* visibilityFromPackage = */ aspectPackage,
 			execGroupPlatformLabels,
 			/* extraAspectIdentifiers = */ nil,

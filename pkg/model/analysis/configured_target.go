@@ -448,6 +448,139 @@ func newVisibilityAttrValue[TReference object.BasicReference, TMetadata model_co
 	return visibilityList, nil
 }
 
+// getEdgeTransitionAttrValues computes the values of all attrs of a
+// rule target that do not depend on any configuration, as these need to
+// be provided to any user defined transitions. Attrs whose values use
+// select() are omitted, causing accesses by transition implementation
+// functions to fail, as select() expressions cannot be resolved before
+// the transition has yielded a configuration. Labels are decoded as
+// plain label values, as transitions run before dependencies are
+// configured.
+//
+// In addition to the map of edge transition attr values, this function
+// returns a second map only containing the values of the attrs that do
+// not depend on the configuration in any way, which can be used to seed
+// the values exposed through ctx.attr.
+func (c *baseComputer[TReference, TMetadata]) getEdgeTransitionAttrValues(
+	ctx context.Context,
+	thread *starlark.Thread,
+	targetLabel label.CanonicalLabel,
+	ruleTarget model_core.Message[*model_starlark_pb.RuleTarget, TReference],
+	ruleDefinition model_core.Message[*model_starlark_pb.Rule_Definition, TReference],
+) (map[string]any, map[string]any, error) {
+	// Set all common attrs.
+	attrValues := make(map[string]any, len(ruleDefinition.Message.Attrs)+2)
+	attrValues["name"] = starlark.String(targetLabel.GetTargetName().String())
+
+	tags := make([]starlark.Value, 0, len(ruleTarget.Message.Tags))
+	for _, tag := range ruleTarget.Message.Tags {
+		tags = append(tags, starlark.String(tag))
+	}
+	attrValues["tags"] = starlark.NewList(tags)
+
+	attrValues["testonly"] = starlark.Bool(ruleTarget.Message.InheritableAttrs.GetTestonly())
+
+	visibilityValue, err := newVisibilityAttrValue[TReference, TMetadata](targetLabel, ruleTarget.Message.InheritableAttrs)
+	if err != nil {
+		return nil, nil, err
+	}
+	attrValues["visibility"] = visibilityValue
+
+	edgeTransitionAttrValues := make(map[string]any, len(ruleDefinition.Message.Attrs)+2)
+	for k, v := range attrValues {
+		edgeTransitionAttrValues[k] = v
+	}
+
+	ruleTargetPublicAttrValues := ruleTarget.Message.PublicAttrValues
+GetConfigurationFreeAttrValues:
+	for _, namedAttr := range ruleDefinition.Message.Attrs {
+		var publicAttrValue *model_starlark_pb.RuleTarget_PublicAttrValue
+		if !strings.HasPrefix(namedAttr.Name, "_") {
+			if len(ruleTargetPublicAttrValues) == 0 {
+				return nil, nil, errors.New("rule target has fewer public attr values than the rule definition has public attrs")
+			}
+			publicAttrValue = ruleTargetPublicAttrValues[0]
+			ruleTargetPublicAttrValues = ruleTargetPublicAttrValues[1:]
+		}
+
+		var valueParts []model_core.Message[*model_starlark_pb.Value, TReference]
+		if !strings.HasPrefix(namedAttr.Name, "_") {
+			// Attr is public. Extract the value
+			// from the rule target.
+			selectGroups := publicAttrValue.ValueParts
+			if len(selectGroups) == 0 {
+				return nil, nil, fmt.Errorf("attr %#v has no select groups", namedAttr.Name)
+			}
+			for _, selectGroup := range selectGroups {
+				if len(selectGroup.Conditions) > 0 {
+					// Conditions are present, meaning the value
+					// depends on a configuration.
+					continue GetConfigurationFreeAttrValues
+				}
+				noMatch, ok := selectGroup.NoMatch.(*model_starlark_pb.Select_Group_NoMatchValue)
+				if !ok {
+					// No default value provided.
+					continue GetConfigurationFreeAttrValues
+				}
+				valueParts = append(valueParts, model_core.Nested(ruleTarget, noMatch.NoMatchValue))
+			}
+
+			// If the value is None, fall back to the
+			// default value from the rule definition.
+			if len(valueParts) == 1 {
+				if _, ok := valueParts[0].Message.Kind.(*model_starlark_pb.Value_None); ok {
+					valueParts = valueParts[:0]
+				}
+			}
+		}
+
+		// No value provided. Use the default value from the
+		// rule definition.
+		if len(valueParts) == 0 {
+			defaultValue := namedAttr.Attr.GetDefault()
+			if defaultValue == nil {
+				return nil, nil, fmt.Errorf("missing value for mandatory attr %#v", namedAttr.Name)
+			}
+			valueParts = append(valueParts, model_core.Nested(ruleDefinition, defaultValue))
+		}
+
+		var attrValue starlark.Value
+		for _, valuePart := range valueParts {
+			decodedPart, err := model_starlark.DecodeValue[TReference, TMetadata](
+				valuePart,
+				/* currentIdentifier = */ nil,
+				c.getValueDecodingOptions(ctx, func(resolvedLabel label.ResolvedLabel) (starlark.Value, error) {
+					return model_starlark.NewLabel[TReference, TMetadata](resolvedLabel), nil
+				}),
+			)
+			if err != nil {
+				return nil, nil, err
+			}
+			if err := concatenateAttrValueParts(thread, &attrValue, decodedPart); err != nil {
+				return nil, nil, err
+			}
+		}
+		attrValue.Freeze()
+
+		switch namedAttr.Attr.GetType().(type) {
+		case *model_starlark_pb.Attr_Label, *model_starlark_pb.Attr_LabelList, *model_starlark_pb.Attr_LabelKeyedStringDict,
+			*model_starlark_pb.Attr_StringKeyedLabelDict,
+			*model_starlark_pb.Attr_Output, *model_starlark_pb.Attr_OutputList:
+			// Don't set these, as they depend on
+			// the configuration.
+		default:
+			attrValues[namedAttr.Name] = attrValue
+		}
+
+		edgeTransitionAttrValues[namedAttr.Name] = attrValue
+	}
+	if l := len(ruleTargetPublicAttrValues); l != 0 {
+		return nil, nil, fmt.Errorf("rule target has %d more public attr values than the rule definition has public attrs", l)
+	}
+
+	return edgeTransitionAttrValues, attrValues, nil
+}
+
 func (c *baseComputer[TReference, TMetadata]) configureAttrValueParts(
 	ctx context.Context,
 	e ConfiguredTargetEnvironment[TReference, TMetadata],
@@ -455,6 +588,7 @@ func (c *baseComputer[TReference, TMetadata]) configureAttrValueParts(
 	namedAttr model_core.Message[*model_starlark_pb.NamedAttr, TReference],
 	valueParts model_core.Message[[]*model_starlark_pb.Value, TReference],
 	configurationReference model_core.Message[*model_core_pb.DecodableReference, TReference],
+	transitionAttrs starlark.Value,
 	visibilityFromPackage label.CanonicalPackage,
 	execGroupPlatformLabels map[string]string,
 	extraAspectIdentifiers []string,
@@ -485,9 +619,7 @@ func (c *baseComputer[TReference, TMetadata]) configureAttrValueParts(
 			e,
 			model_core.Nested(namedAttr, cfg),
 			configurationReference,
-			model_starlark.NewStructFromDict[TReference, TMetadata](nil, map[string]any{
-				// TODO!
-			}),
+			transitionAttrs,
 			execGroupPlatformLabels,
 		)
 		if err != nil {
@@ -747,119 +879,18 @@ func (c *baseComputer[TReference, TMetadata]) ComputeConfiguredTargetValue(ctx c
 
 		thread := c.newStarlarkThread(ctx, e, allBuiltinsModulesNames.Message.BuiltinsModuleNames)
 
-		// Set all common attrs.
-		attrValues := make(map[string]any, len(ruleDefinition.Message.Attrs)+2)
-		name := starlark.String(targetLabel.GetTargetName().String())
-		attrValues["name"] = name
-
-		tags := make([]starlark.Value, 0, len(ruleTarget.Tags))
-		for _, tag := range ruleTarget.Tags {
-			tags = append(tags, starlark.String(tag))
-		}
-		tagsList := starlark.NewList(tags)
-		attrValues["tags"] = tagsList
-
-		attrValues["testonly"] = starlark.Bool(ruleTarget.InheritableAttrs.GetTestonly())
-
-		visibilityValue, err := newVisibilityAttrValue[TReference, TMetadata](targetLabel, ruleTarget.InheritableAttrs)
-		if err != nil {
-			return PatchedConfiguredTargetValue[TMetadata]{}, err
-		}
-		attrValues["visibility"] = visibilityValue
-
-		edgeTransitionAttrValues := make(map[string]any, len(ruleDefinition.Message.Attrs)+2)
-		for k, v := range attrValues {
-			edgeTransitionAttrValues[k] = v
-		}
-
 		// Obtain all attr values that don't depend on any
 		// configuration, as these need to be provided to any
 		// incoming edge transitions.
-		ruleTargetPublicAttrValues := ruleTarget.PublicAttrValues
-	GetConfigurationFreeAttrValues:
-		for _, namedAttr := range ruleDefinition.Message.Attrs {
-			var publicAttrValue *model_starlark_pb.RuleTarget_PublicAttrValue
-			if !strings.HasPrefix(namedAttr.Name, "_") {
-				if len(ruleTargetPublicAttrValues) == 0 {
-					return PatchedConfiguredTargetValue[TMetadata]{}, errors.New("rule target has fewer public attr values than the rule definition has public attrs")
-				}
-				publicAttrValue = ruleTargetPublicAttrValues[0]
-				ruleTargetPublicAttrValues = ruleTargetPublicAttrValues[1:]
-			}
-
-			var valueParts []model_core.Message[*model_starlark_pb.Value, TReference]
-			if !strings.HasPrefix(namedAttr.Name, "_") {
-				// Attr is public. Extract the value
-				// from the rule target.
-				selectGroups := publicAttrValue.ValueParts
-				if len(selectGroups) == 0 {
-					return PatchedConfiguredTargetValue[TMetadata]{}, fmt.Errorf("attr %#v has no select groups", namedAttr.Name)
-				}
-				for _, selectGroup := range selectGroups {
-					if len(selectGroup.Conditions) > 0 {
-						// Conditions are present, meaning the value
-						// depends on a configuration.
-						continue GetConfigurationFreeAttrValues
-					}
-					noMatch, ok := selectGroup.NoMatch.(*model_starlark_pb.Select_Group_NoMatchValue)
-					if !ok {
-						// No default value provided.
-						continue GetConfigurationFreeAttrValues
-					}
-					valueParts = append(valueParts, model_core.Nested(targetValue, noMatch.NoMatchValue))
-				}
-
-				// If the value is None, fall back to the
-				// default value from the rule definition.
-				if len(valueParts) == 1 {
-					if _, ok := valueParts[0].Message.Kind.(*model_starlark_pb.Value_None); ok {
-						valueParts = valueParts[:0]
-					}
-				}
-			}
-
-			// No value provided. Use the default value from the
-			// rule definition.
-			if len(valueParts) == 0 {
-				defaultValue := namedAttr.Attr.GetDefault()
-				if defaultValue == nil {
-					return PatchedConfiguredTargetValue[TMetadata]{}, fmt.Errorf("missing value for mandatory attr %#v", namedAttr.Name)
-				}
-				valueParts = append(valueParts, model_core.Nested(ruleDefinition, defaultValue))
-			}
-
-			var attrValue starlark.Value
-			for _, valuePart := range valueParts {
-				decodedPart, err := model_starlark.DecodeValue[TReference, TMetadata](
-					valuePart,
-					/* currentIdentifier = */ nil,
-					c.getValueDecodingOptions(ctx, func(resolvedLabel label.ResolvedLabel) (starlark.Value, error) {
-						return model_starlark.NewLabel[TReference, TMetadata](resolvedLabel), nil
-					}),
-				)
-				if err != nil {
-					return PatchedConfiguredTargetValue[TMetadata]{}, err
-				}
-				if err := concatenateAttrValueParts(thread, &attrValue, decodedPart); err != nil {
-					return PatchedConfiguredTargetValue[TMetadata]{}, err
-				}
-			}
-			attrValue.Freeze()
-
-			switch namedAttr.Attr.GetType().(type) {
-			case *model_starlark_pb.Attr_Label, *model_starlark_pb.Attr_LabelList, *model_starlark_pb.Attr_LabelKeyedStringDict,
-				*model_starlark_pb.Attr_StringKeyedLabelDict,
-				*model_starlark_pb.Attr_Output, *model_starlark_pb.Attr_OutputList:
-				// Don't set these, as they depend on
-				// the configuration.
-			default:
-				attrValues[namedAttr.Name] = attrValue
-			}
-
-			edgeTransitionAttrValues[namedAttr.Name] = attrValue
-		}
-		if l := len(ruleTargetPublicAttrValues); l != 0 {
-			return PatchedConfiguredTargetValue[TMetadata]{}, fmt.Errorf("rule target has %d more public attr values than the rule definition has public attrs", l)
+		edgeTransitionAttrValues, attrValues, err := c.getEdgeTransitionAttrValues(
+			ctx,
+			thread,
+			targetLabel,
+			model_core.Nested(targetValue, ruleTarget),
+			ruleDefinition,
+		)
+		if err != nil {
+			return PatchedConfiguredTargetValue[TMetadata]{}, err
 		}
 
 		// If provided, apply a user defined incoming edge transition.
@@ -925,7 +956,7 @@ func (c *baseComputer[TReference, TMetadata]) ComputeConfiguredTargetValue(ctx c
 		// configuration, due to them using select().
 		missingDependencies := false
 		outputsValues := map[string]any{}
-		ruleTargetPublicAttrValues = ruleTarget.PublicAttrValues
+		ruleTargetPublicAttrValues := ruleTarget.PublicAttrValues
 		targetPackage := targetLabel.GetCanonicalPackage()
 
 		// Expose the "features" and "target_compatible_with"
@@ -1545,6 +1576,7 @@ func (c *baseComputer[TReference, TMetadata]) ComputeConfiguredTargetValue(ctx c
 					model_core.Nested(subruleDefinition, namedAttr),
 					model_core.Nested(rc.ruleDefinition, []*model_starlark_pb.Value{defaultValue}),
 					rc.configurationReference,
+					edgeTransitionAttrValuesStruct,
 					rc.ruleIdentifier.GetCanonicalLabel().GetCanonicalPackage(),
 					execGroupPlatformLabels,
 					/* extraAspectIdentifiers = */ nil,

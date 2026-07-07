@@ -11,7 +11,15 @@ load(
     "probe_toolchain",
     "toolchain_probe_reader",
 )
-load(":defs.bzl", "repo_info", "setting_reader", "verify_native_apis")
+load(
+    ":defs.bzl",
+    "attr_transitioned_reader",
+    "repo_info",
+    "self_transitioned_reader",
+    "setting_reader",
+    "transitioned_mode_aspect_reader",
+    "verify_native_apis",
+)
 
 string_flag(
     name = "mode",
@@ -35,6 +43,31 @@ genrule(
 setting_reader(
     name = "transitioned_mode",
     setting = ":mode",
+)
+
+# The user-defined transition on attr_transitioned_reader's "setting"
+# attribute reads the sibling "mode" attribute, so the dependency must
+# observe //:mode being derived from its literal value.
+attr_transitioned_reader(
+    name = "attr_transitioned",
+    mode = "sibling",
+    setting = ":mode",
+)
+
+# self_transitioned_reader carries the same transition as its incoming
+# edge transition, so the target's own configuration must have //:mode
+# derived from the "mode" attribute.
+self_transitioned_reader(
+    name = "self_transitioned",
+    mode = "incoming",
+)
+
+# transitioned_mode_aspect rematerializes ctx.rule.attr of
+# :attr_transitioned, which reapplies the attr-reading transition on
+# its "setting" attribute.
+transitioned_mode_aspect_reader(
+    name = "aspect_transitioned",
+    dep = ":attr_transitioned",
 )
 
 verify_native_apis()
@@ -168,12 +201,15 @@ genrule(
     name = "verify",
     srcs = [
         ":aspect_labels",
+        ":aspect_transitioned",
+        ":attr_transitioned",
         ":composed_aspects",
         ":dict_labels",
         ":dict_node_labels",
         ":hello",
         ":marked_labels",
         ":repo_info",
+        ":self_transitioned",
         ":toolchain_probe",
         ":transitioned_mode",
     ],
@@ -197,6 +233,9 @@ genrule(
           "grep -q 'subpackages=\\[\"platforms\"\\]' $(location :repo_info) && " +
           "grep -q 'sum(\\[4, 5, 6\\]) = 15' $(location :repo_info) && " +
           "grep -q 'mode=transitioned' $(location :transitioned_mode) && " +
+          "grep -q 'dep_mode=attr-sibling' $(location :attr_transitioned) && " +
+          "grep -q 'self_mode=attr-incoming' $(location :self_transitioned) && " +
+          "grep -q 'aspect_mode=attr-sibling' $(location :aspect_transitioned) && " +
           "cat $(location :hello) $(location :repo_info) $(location :transitioned_mode) > $@",
 )
 
@@ -204,12 +243,15 @@ filegroup(
     name = "all",
     srcs = [
         ":aspect_labels",
+        ":aspect_transitioned",
+        ":attr_transitioned",
         ":composed_aspects",
         ":dict_labels",
         ":dict_node_labels",
         ":hello",
         ":marked_labels",
         ":repo_info",
+        ":self_transitioned",
         ":toolchain_probe",
         ":transitioned_mode",
         ":verify",
