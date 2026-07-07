@@ -3373,6 +3373,7 @@ func (mrc *moduleOrRepositoryContext[TReference, TMetadata]) relativizeSymlinks(
 		environment:                   mrc.environment,
 		directoryLoadOptions:          mrc.directoryLoadOptions,
 		virtualRootScopeWalkerFactory: mrc.virtualRootScopeWalkerFactory,
+		rootPath:                      mrc.stableInputRootPath,
 	}
 	return sr.relativizeSymlinksRecursively(dStack, dPath, maximumEscapementLevels)
 }

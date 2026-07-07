@@ -60,7 +60,12 @@ func (c *baseComputer[TReference, TMetadata]) ComputeRepoPlatformHostPathValue(c
 	}
 
 	// Request that the worker captures a given path by copying it
-	// into its input root directory, using "cp -RH".
+	// into its input root directory, using "cp -RH". The copy is
+	// guarded by an existence check, so that a path that does not
+	// exist on the host (e.g. a symlink pointing at a location that
+	// is itself absent, as some JDK distributions ship) yields an
+	// action that succeeds without producing any output rather than
+	// failing outright.
 	// TODO: This should use inlinedtree.Build().
 	const capturedFilename = "captured"
 	createdCommand, err := model_core.MarshalAndEncodeDeterministic(
@@ -69,12 +74,22 @@ func (c *baseComputer[TReference, TMetadata]) ComputeRepoPlatformHostPathValue(c
 				Arguments: []*model_command_pb.ArgumentList_Element{
 					{
 						Level: &model_command_pb.ArgumentList_Element_Leaf{
-							Leaf: "cp",
+							Leaf: "sh",
 						},
 					},
 					{
 						Level: &model_command_pb.ArgumentList_Element_Leaf{
-							Leaf: "-RH",
+							Leaf: "-c",
+						},
+					},
+					{
+						Level: &model_command_pb.ArgumentList_Element_Leaf{
+							Leaf: `if [ -e "$1" ]; then exec cp -RH "$1" "$2"; fi`,
+						},
+					},
+					{
+						Level: &model_command_pb.ArgumentList_Element_Leaf{
+							Leaf: "sh",
 						},
 					},
 					{
@@ -204,6 +219,7 @@ func (c *baseComputer[TReference, TMetadata]) ComputeRepoPlatformHostPathValue(c
 				leavesReader:            directoryReaders.Leaves,
 			},
 			virtualRootScopeWalkerFactory: virtualRootScopeWalkerFactory,
+			rootPath:                      path.UNIXFormat.NewParser(key.AbsolutePath),
 		}
 		if err := sr.relativizeSymlinksRecursively(
 			util.NewNonEmptyStack(&rootDirectory),
@@ -269,13 +285,18 @@ func (c *baseComputer[TReference, TMetadata]) ComputeRepoPlatformHostPathValue(c
 		), nil
 	}
 
-	return PatchedRepoPlatformHostPathValue[TMetadata]{}, errors.New("action did not capture host path")
+	// The action produced no output, meaning the path does not exist
+	// on the host file system. Report its absence by leaving the
+	// captured_path oneof unset, so that callers can distinguish it
+	// from a captured file or directory.
+	return model_core.NewSimplePatchedMessage[TMetadata](&model_analysis_pb.RepoPlatformHostPath_Value{}), nil
 }
 
 type changeTrackingDirectoryNormalizingPathResolver[TReference object.BasicReference, TMetadata model_core.ReferenceMetadata] struct {
 	loadOptions *changeTrackingDirectoryLoadOptions[TReference]
 
 	gotScope    bool
+	dangling    bool
 	directories util.NonEmptyStack[*changeTrackingDirectory[TReference, TMetadata]]
 	components  []path.Component
 }
@@ -315,7 +336,16 @@ func (r *changeTrackingDirectoryNormalizingPathResolver[TReference, TMetadata]) 
 		}, nil
 	}
 
-	return nil, fmt.Errorf("directory %#v does not exist", name.String())
+	// The directory does not exist in the captured tree, so the
+	// symlink is dangling (e.g. it refers to an optional component
+	// that is not installed). Record this and let the remainder of
+	// the path resolve into the void, so that the caller can choose
+	// to leave the symlink untouched instead of failing.
+	r.dangling = true
+	return path.GotDirectory{
+		Child:        path.VoidComponentWalker,
+		IsReversible: false,
+	}, nil
 }
 
 func (r *changeTrackingDirectoryNormalizingPathResolver[TReference, TMetadata]) OnTerminal(name path.Component) (*path.GotSymlink, error) {
@@ -348,6 +378,110 @@ type changeTrackingDirectorySymlinksRelativizer[TReference object.BasicReference
 	environment                   changeTrackingDirectorySymlinksRelativizerEnvironment[TReference]
 	directoryLoadOptions          *changeTrackingDirectoryLoadOptions[TReference]
 	virtualRootScopeWalkerFactory *path.VirtualRootScopeWalkerFactory
+	// rootPath is the absolute path of the captured root directory on
+	// the repo platform's host file system. It corresponds to the
+	// same location at which virtualRootScopeWalkerFactory places its
+	// virtual root, and is used to anchor relative symlink targets
+	// that escape the captured root directory.
+	rootPath path.Parser
+}
+
+// lexicalComponentWalker performs purely lexical (symlink oblivious)
+// path normalization. Every pathname component is treated as an
+// ordinary, reversible directory, so that when it is combined with a
+// Builder any "." and ".." components are collapsed instead of being
+// retained. This is used to turn a symlink target into a clean absolute
+// path on the host file system without consulting its contents.
+type lexicalComponentWalker struct{}
+
+func (lexicalComponentWalker) OnDirectory(name path.Component) (path.GotDirectoryOrSymlink, error) {
+	return path.GotDirectory{
+		Child:        lexicalComponentWalker{},
+		IsReversible: true,
+	}, nil
+}
+
+func (lexicalComponentWalker) OnTerminal(name path.Component) (*path.GotSymlink, error) {
+	return nil, nil
+}
+
+func (lexicalComponentWalker) OnUp() (path.ComponentWalker, error) {
+	return lexicalComponentWalker{}, nil
+}
+
+// lexicalScopeWalker is the ScopeWalker counterpart of
+// lexicalComponentWalker. It accepts both absolute and relative paths,
+// so that an absolute symlink target replaces the anchor directory,
+// while a relative one continues from it.
+type lexicalScopeWalker struct{}
+
+func (lexicalScopeWalker) OnAbsolute() (path.ComponentWalker, error) {
+	return lexicalComponentWalker{}, nil
+}
+
+func (lexicalScopeWalker) OnRelative() (path.ComponentWalker, error) {
+	return lexicalComponentWalker{}, nil
+}
+
+func (lexicalScopeWalker) OnDriveLetter(driveLetter rune) (path.ComponentWalker, error) {
+	return nil, errors.New("drive letters are not supported")
+}
+
+func (lexicalScopeWalker) OnShare(server, share string) (path.ComponentWalker, error) {
+	return nil, errors.New("shares are not supported")
+}
+
+// resolveHostPath computes the absolute location on the repo platform's
+// host file system that a symlink points to. The symlink resides in the
+// directory identified by dPath, relative to the captured root
+// directory (whose host path is sr.rootPath). Relative targets are
+// anchored at that directory; absolute targets replace it. In both
+// cases "." and ".." components are collapsed lexically, yielding a
+// clean absolute path without any ".." components. Resolving such a
+// path through the virtual root therefore never has to ascend above the
+// captured root directory, which changeTrackingDirectoryNormalizingPathResolver
+// cannot represent.
+func (sr *changeTrackingDirectorySymlinksRelativizer[TReference, TMetadata]) resolveHostPath(dPath *path.Trace, target path.Parser) (path.Parser, error) {
+	// Serialize the symlink target to its literal string form. This
+	// combines the anchoring directory and the target into a single
+	// path that is normalized in one pass below. Normalizing across
+	// separate Resolve() calls would not collapse ".." components, as
+	// Builder treats the last component of each resolved path as a
+	// non-reversible terminal.
+	targetBuilder, targetScopeWalker := path.EmptyBuilder.Join(path.VoidScopeWalker)
+	if err := path.Resolve(target, targetScopeWalker); err != nil {
+		return nil, err
+	}
+	targetString := targetBuilder.GetUNIXString()
+
+	var combined string
+	if strings.HasPrefix(targetString, "/") {
+		// Absolute target: it stands on its own.
+		combined = targetString
+	} else {
+		// Relative target: anchor it at the symlink's directory,
+		// which is the captured root directory (sr.rootPath)
+		// joined with dPath.
+		rootBuilder, rootScopeWalker := path.EmptyBuilder.Join(path.VoidScopeWalker)
+		if err := path.Resolve(sr.rootPath, rootScopeWalker); err != nil {
+			return nil, err
+		}
+		combined = rootBuilder.GetUNIXString()
+		if dPath != nil {
+			combined += "/" + dPath.GetUNIXString()
+		}
+		combined += "/" + targetString
+	}
+
+	// Normalize the combined path in a single pass, collapsing "."
+	// and ".." components against the (reversible) directories that
+	// precede them. Excess ".." components at the file system root are
+	// dropped, so the result is a clean absolute path.
+	normalizedBuilder, normalizedScopeWalker := path.EmptyBuilder.Join(lexicalScopeWalker{})
+	if err := path.Resolve(path.UNIXFormat.NewParser(combined), normalizedScopeWalker); err != nil {
+		return nil, err
+	}
+	return normalizedBuilder, nil
 }
 
 func (sr *changeTrackingDirectorySymlinksRelativizer[TReference, TMetadata]) relativizeSymlinksRecursively(dStack util.NonEmptyStack[*changeTrackingDirectory[TReference, TMetadata]], dPath *path.Trace, maximumEscapementLevels uint32) error {
@@ -369,15 +503,40 @@ func (sr *changeTrackingDirectorySymlinksRelativizer[TReference, TMetadata]) rel
 		}
 		if levels := escapementCounter.GetLevels(); levels == nil || levels.Value > maximumEscapementLevels {
 			// Target of this symlink is absolute or has too
-			// many ".." components.
+			// many ".." components, so it may escape the
+			// captured root directory. Rewrite it to a clean
+			// absolute path on the repo platform's host file
+			// system first. This anchors relative targets at
+			// the symlink's own directory and collapses ".."
+			// components up front, so that resolving it through
+			// the virtual root below never needs to ascend above
+			// the captured root directory.
+			absoluteTarget, err := sr.resolveHostPath(dPath, target)
+			if err != nil {
+				return fmt.Errorf("failed to resolve symlink %#v: %w", dPath.Append(name).GetUNIXString(), err)
+			}
+
 			r := changeTrackingDirectoryNormalizingPathResolver[TReference, TMetadata]{
 				loadOptions: sr.directoryLoadOptions,
 				directories: dStack.Copy(),
 				components:  append([]path.Component(nil), dPath.ToList()...),
 			}
 			normalizedPath, scopeWalker := path.EmptyBuilder.Join(sr.virtualRootScopeWalkerFactory.New(&r))
-			if err := path.Resolve(target, scopeWalker); err != nil {
+			if err := path.Resolve(absoluteTarget, scopeWalker); err != nil {
 				return fmt.Errorf("failed to resolve symlink %#v: %w", dPath.Append(name).GetUNIXString(), err)
+			}
+			if r.dangling {
+				// The target resolves to a location inside the
+				// directory hierarchy that does not exist, so
+				// the symlink is dangling. It cannot be
+				// rewritten to a relative path that stays within
+				// the hierarchy, nor does it refer to any content
+				// to capture. Drop it, consistent with this
+				// pass's goal of eliminating symlinks that escape
+				// the directory hierarchy (some JDK distributions
+				// ship such dangling symlinks).
+				delete(d.symlinks, name)
+				continue
 			}
 			if r.gotScope {
 				// Symlink points to a file that resides
@@ -430,6 +589,20 @@ func (sr *changeTrackingDirectorySymlinksRelativizer[TReference, TMetadata]) rel
 				}
 
 				delete(d.symlinks, name)
+				if replacement.Message.CapturedPath == nil {
+					// The target does not exist on the
+					// host file system (e.g. a dangling
+					// symlink, as some JDK distributions
+					// ship). There is nothing to capture,
+					// and an escaping symlink cannot be
+					// represented in the repo, so drop it
+					// (already removed above), consistent
+					// with this pass's goal of eliminating
+					// symlinks that escape the directory
+					// hierarchy.
+					continue
+				}
+
 				switch capturedPath := replacement.Message.CapturedPath.(type) {
 				case *model_analysis_pb.RepoPlatformHostPath_Value_File:
 					f, err := newChangeTrackingFileFromFileProperties[TReference, TMetadata](model_core.Nested(replacement, capturedPath.File))
