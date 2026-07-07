@@ -132,6 +132,7 @@ trap teardown EXIT INT TERM
 
 for _ in $(seq 60); do
   [ -S "$RUN_DIR/bonanza_demo/bonanza_scheduler_clients.sock" ] &&
+    [ -S "$RUN_DIR/bonanza_demo/bonanza_scheduler_workers.sock" ] &&
     [ -S "$RUN_DIR/bonanza_demo/bonanza_storage_frontend.sock" ] && break
   grep -q "Fatal error" "$RUN_DIR/cluster.log" && {
     tail -5 "$RUN_DIR/cluster.log" >&2
@@ -162,7 +163,21 @@ build() {
 }
 log "building //:all with bonanza_bazel (cold)"
 t0=$(date +%s)
-build || die "bonanza_bazel build failed"
+# The worker synchronizes with the scheduler on its own cadence, so on
+# slow machines the first build request may arrive before any worker
+# has registered. Retry while that is the only failure observed.
+for attempt in $(seq 6); do
+  if build 2> "$RUN_DIR/build_stderr.log"; then
+    cat "$RUN_DIR/build_stderr.log" >&2
+    break
+  fi
+  cat "$RUN_DIR/build_stderr.log" >&2
+  grep -q "No workers exist" "$RUN_DIR/build_stderr.log" ||
+    die "bonanza_bazel build failed"
+  [ "$attempt" -lt 6 ] || die "bonanza_bazel build failed: no workers registered"
+  log "no workers registered yet; retrying in 5s (attempt $attempt)"
+  sleep 5
+done
 t1=$(date +%s)
 log "cold build succeeded in $((t1 - t0))s"
 
