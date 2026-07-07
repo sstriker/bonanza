@@ -300,12 +300,30 @@ func (c *baseComputer[TReference, TMetadata]) newStarlarkThread(ctx context.Cont
 		}
 		return functionFactory, nil
 	})
-	thread.SetLocal(
-		model_starlark.ValueDecodingOptionsKey,
-		c.getValueDecodingOptions(ctx, func(resolvedLabel label.ResolvedLabel) (starlark.Value, error) {
-			return model_starlark.NewLabel[TReference, TMetadata](resolvedLabel), nil
-		}),
-	)
+	valueDecodingOptions := c.getValueDecodingOptions(ctx, func(resolvedLabel label.ResolvedLabel) (starlark.Value, error) {
+		return model_starlark.NewLabel[TReference, TMetadata](resolvedLabel), nil
+	})
+	valueDecodingOptions.GlobalResolver = func(identifier label.CanonicalStarlarkIdentifier) (starlark.Value, error) {
+		// Resolve references to globals of compiled .bzl files
+		// through the memoized decoded globals of the file, so
+		// that the resolved value is the same object that
+		// load()ing the file yields. This preserves the
+		// identity of values that are defined recursively.
+		filename := identifier.GetCanonicalLabel()
+		decodedGlobals, gotDecodedGlobals := e.GetCompiledBzlFileDecodedGlobalsValue(&model_analysis_pb.CompiledBzlFileDecodedGlobals_Key{
+			Label:               filename.String(),
+			BuiltinsModuleNames: trimBuiltinModuleNames(builtinsModuleNames, filename.GetCanonicalRepo().GetModuleInstance().GetModule()),
+		})
+		if !gotDecodedGlobals {
+			return nil, evaluation.ErrMissingDependency
+		}
+		value, ok := decodedGlobals[identifier.GetStarlarkIdentifier().String()]
+		if !ok {
+			return nil, fmt.Errorf("global %#v does not exist", identifier.String())
+		}
+		return value, nil
+	}
+	thread.SetLocal(model_starlark.ValueDecodingOptionsKey, valueDecodingOptions)
 	thread.SetLocal(
 		model_starlark.RootModuleNameResolverKey,
 		model_starlark.RootModuleNameResolver(func() (string, error) {

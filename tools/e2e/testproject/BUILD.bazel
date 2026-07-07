@@ -22,6 +22,7 @@ load(
     "transitioned_mode_aspect_reader",
     "verify_native_apis",
 )
+load(":flag_enum.bzl", "flag_enum_probe")
 
 string_flag(
     name = "mode",
@@ -38,6 +39,12 @@ genrule(
     outs = ["hello.txt"],
     cmd = "echo 'Hello from patched bonanza' > $@",
 )
+
+# rules_python's enum-like structs are defined recursively: their
+# method closures capture the struct itself through a cell. The probe
+# calls one of the decoded enum's methods, proving that the cycle was
+# encoded and resolved correctly.
+flag_enum_probe(name = "flag_enum")
 
 # setting_reader's "setting" attribute carries an
 # analysis_test_transition() that overrides //:mode, so the output
@@ -233,6 +240,7 @@ genrule(
         ":composed_aspects",
         ":dict_labels",
         ":dict_node_labels",
+        ":flag_enum",
         ":hello",
         ":marked_labels",
         ":repo_info",
@@ -263,6 +271,7 @@ genrule(
           "grep -qF 'content action_edges_node.dir = None' $(location :action_edges) && " +
           "grep -qF 'content action_edges_node.sym = None' $(location :action_edges) && " +
           "grep -qF 'content action_edges_node.symfile = None' $(location :action_edges) && " +
+          "grep -qF 'load_time=[\"auto\", \"disabled\", \"enabled\"] analysis_time=[\"auto\", \"disabled\", \"enabled\"]' $(location :flag_enum) && " +
           "grep -q 'Hello from patched bonanza' $(location :hello) && " +
           "grep -q 'module=testproject' $(location :repo_info) && " +
           "grep -q 'version=None' $(location :repo_info) && " +
@@ -289,6 +298,7 @@ filegroup(
         ":composed_aspects",
         ":dict_labels",
         ":dict_node_labels",
+        ":flag_enum",
         ":hello",
         ":marked_labels",
         ":repo_info",

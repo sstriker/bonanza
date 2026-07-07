@@ -75,6 +75,7 @@ provide_module() { # name, github repo, git ref, registry version
 }
 provide_module bazel_skylib bazelbuild/bazel-skylib 1.9.0 1.9.0
 provide_module platforms bazelbuild/platforms 1.0.0 1.0.0
+provide_module rules_python bazel-contrib/rules_python 2.0.3 2.0.3
 provide_module rules_rust bazelbuild/rules_rust 0.62.0 0.62.0
 if ! grep -q '"j"' "$DEPS/rules_rust/MODULE.bazel"; then
   patch -p0 -s --no-backup-if-mismatch -d "$DEPS/rules_rust" \
@@ -99,6 +100,7 @@ common:bonanza --override_module=builtins_bzl=$REPO/starlark/builtins_bzl
 common:bonanza --override_module=builtins_core=$REPO/starlark/builtins_core
 common:bonanza --override_module=bazel_skylib=$DEPS/bazel_skylib
 common:bonanza --override_module=platforms=$DEPS/platforms
+common:bonanza --override_module=rules_python=$DEPS/rules_python
 common:bonanza --override_module=rules_rust=$DEPS/rules_rust
 common:bonanza --builtins_module=builtins_core
 common:bonanza --builtins_module=builtins_bzl

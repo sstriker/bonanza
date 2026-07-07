@@ -49,6 +49,22 @@ type ValueEncodingOptions[TReference any, TMetadata model_core.ReferenceMetadata
 	ObjectCapturer         model_core.ObjectCapturer[TReference, TMetadata]
 	ObjectMinimumSizeBytes int
 	ObjectMaximumSizeBytes int
+
+	// Identifiers of globals of the file that is currently being
+	// compiled that are persisted as part of the resulting
+	// CompiledProgram message. This map is only set by
+	// EncodeCompiledProgram(), on a private copy of the options. It
+	// is used to break reference cycles that re-enter one of these
+	// globals by emitting Value messages of kind "global_reference".
+	globalIdentifiers map[starlark.Value]pg_label.CanonicalStarlarkIdentifier
+
+	// The number of function closures whose default parameters and
+	// free variables are currently being encoded. References to
+	// globals may only be emitted at positions beneath a closure,
+	// as those are the only positions that are decoded lazily.
+	// Encoding is performed by a single goroutine, meaning that no
+	// locking is needed to mutate this counter.
+	insideClosureCount int
 }
 
 // ComputeListParentNode generates a parent node of a Starlark list that
@@ -129,9 +145,65 @@ type EncodableValue[TReference any, TMetadata model_core.ReferenceMetadata] inte
 	EncodeValue(path map[starlark.Value]struct{}, currentIdentifier *pg_label.CanonicalStarlarkIdentifier, options *ValueEncodingOptions[TReference, TMetadata]) (model_core.PatchedMessage[*model_starlark_pb.Value, TMetadata], bool, error)
 }
 
+// globalReferenceEncodable is implemented by Starlark value types in
+// this package that provide identity, but for which no reference based
+// encoding exists. If values of these types are bound to persisted
+// globals of the file that is currently being compiled, they may be
+// encoded as references to those globals when they are encountered
+// beneath function closures. This makes it possible to encode values
+// that are defined recursively.
+type globalReferenceEncodable interface {
+	starlark.Value
+	isGlobalReferenceEncodable()
+}
+
 // EncodeCompiledProgram converts a Starlark program to a Protobuf
 // message, so that it can be written to storage.
 func EncodeCompiledProgram[TReference any, TMetadata model_core.ReferenceMetadata](program *starlark.Program, globals starlark.StringDict, options *ValueEncodingOptions[TReference, TMetadata]) (model_core.PatchedMessage[*model_starlark_pb.CompiledProgram, TMetadata], error) {
+	// Gather the globals that are persisted as part of the
+	// CompiledProgram message and provide identity, but for which no
+	// reference based encoding exists. If any of these values are
+	// referenced by the default parameters or free variables of a
+	// function closure, they can be encoded by name. This makes it
+	// possible to encode values that are defined recursively, such
+	// as enum-like structs whose methods capture the struct itself
+	// through a closure cell.
+	if options.CurrentFilename != nil {
+		globalIdentifiers := map[starlark.Value]pg_label.CanonicalStarlarkIdentifier{}
+		for _, name := range slices.Sorted(maps.Keys(globals)) {
+			identifier, err := pg_label.NewStarlarkIdentifier(name)
+			if err != nil {
+				return model_core.PatchedMessage[*model_starlark_pb.CompiledProgram, TMetadata]{}, err
+			}
+			value := globals[name]
+			if _, ok := value.(NamedGlobal); !ok && !identifier.IsPublic() {
+				continue
+			}
+			switch value.(type) {
+			case globalReferenceEncodable, *starlark.List, *starlark.Dict, *starlark.Set:
+				// Value types such as booleans, strings
+				// and integers must remain excluded, as
+				// encoding those by name would cause
+				// unrelated equal values to become
+				// aliased. starlark.Tuple must remain
+				// excluded, as slices are not comparable
+				// and cannot be used as map keys.
+				// Functions, rules, providers and
+				// similar types already have reference
+				// based encodings of their own.
+				if _, ok := globalIdentifiers[value]; !ok {
+					// If the same value is bound to
+					// multiple globals, deterministically
+					// pick the alphabetically first name.
+					globalIdentifiers[value] = options.CurrentFilename.AppendStarlarkIdentifier(identifier)
+				}
+			}
+		}
+		optionsCopy := *options
+		optionsCopy.globalIdentifiers = globalIdentifiers
+		options = &optionsCopy
+	}
+
 	needsCode := false
 	var globalsKeys []string
 	globalsValuesBuilder := NewListBuilder[TReference, TMetadata](options)
@@ -193,6 +265,22 @@ func EncodeCompiledProgram[TReference any, TMetadata model_core.ReferenceMetadat
 // EncodeValue converts a Starlark value object to a Protobuf message,
 // so that it can be written to storage.
 func EncodeValue[TReference any, TMetadata model_core.ReferenceMetadata](value starlark.Value, path map[starlark.Value]struct{}, currentIdentifier *pg_label.CanonicalStarlarkIdentifier, options *ValueEncodingOptions[TReference, TMetadata]) (model_core.PatchedMessage[*model_starlark_pb.Value, TMetadata], bool, error) {
+	// If a value that is bound to one of the persisted globals of
+	// the file that is currently being compiled is encountered
+	// while encoding a function closure, encode it as a reference
+	// to that global. As closures are only decoded upon the first
+	// call to the function, this breaks reference cycles of values
+	// that are defined recursively.
+	if options.insideClosureCount > 0 {
+		if identifier, ok := options.globalIdentifiers[value]; ok {
+			return model_core.NewSimplePatchedMessage[TMetadata](&model_starlark_pb.Value{
+				Kind: &model_starlark_pb.Value_GlobalReference{
+					GlobalReference: identifier.String(),
+				},
+			}), false, nil
+		}
+	}
+
 	if value == starlark.None {
 		return model_core.NewSimplePatchedMessage[TMetadata](&model_starlark_pb.Value{
 			Kind: &model_starlark_pb.Value_None{
@@ -246,6 +334,7 @@ func EncodeValue[TReference any, TMetadata model_core.ReferenceMetadata](value s
 				})
 			}),
 		)
+		defer treeBuilder.Discard()
 
 		needsCode := false
 		for key, value := range starlark.Entries(nil, typedValue) {
@@ -464,6 +553,14 @@ type ValueDecodingOptions[TReference any] struct {
 	Readers         *ValueReaders[TReference]
 	LabelCreator    func(pg_label.ResolvedLabel) (starlark.Value, error)
 	BzlFileBuiltins starlark.StringDict
+
+	// GlobalResolver returns the decoded value of a global of a
+	// compiled .bzl file. It is invoked when values of kind
+	// "global_reference" are decoded, which EncodeCompiledProgram()
+	// emits to break reference cycles. It may be left unset in
+	// contexts that never call functions, as global references only
+	// occur within lazily decoded function closures.
+	GlobalResolver func(pg_label.CanonicalStarlarkIdentifier) (starlark.Value, error)
 }
 
 // getThread creates a Starlark thread that can be used whenever the
@@ -577,6 +674,18 @@ func DecodeValue[TReference object.BasicReference, TMetadata model_core.Referenc
 		return NewNamedFunction(NewProtoNamedFunctionDefinition[TReference, TMetadata](
 			model_core.Nested(encodedValue, typedValue.Function),
 		)), nil
+	case *model_starlark_pb.Value_GlobalReference:
+		identifier, err := pg_label.NewCanonicalStarlarkIdentifier(typedValue.GlobalReference)
+		if err != nil {
+			return nil, fmt.Errorf("invalid global reference %#v: %w", typedValue.GlobalReference, err)
+		}
+		if options.GlobalResolver == nil {
+			return nil, fmt.Errorf("global reference %#v cannot be resolved from within this context", typedValue.GlobalReference)
+		}
+		// No freezing needs to be performed here, as the
+		// resolver returns values that were already frozen when
+		// the referenced file's globals were decoded.
+		return options.GlobalResolver(identifier)
 	case *model_starlark_pb.Value_Int:
 		var i big.Int
 		i.SetBytes(typedValue.Int.AbsoluteValue)

@@ -123,6 +123,18 @@ func (d starlarkNamedFunctionDefinition[TReference, TMetadata]) Encode(path map[
 		path[d] = struct{}{}
 		defer delete(path, d)
 
+		// Default parameters and free variables of a closure
+		// are only decoded when the function is called for the
+		// first time, which happens after all globals of the
+		// current file have been decoded. This means that any
+		// references to persisted globals of the current file
+		// that occur beneath them may safely be encoded by
+		// name, thereby breaking reference cycles.
+		if options.globalIdentifiers != nil {
+			options.insideClosureCount++
+			defer func() { options.insideClosureCount-- }()
+		}
+
 		numRawDefaults := d.Function.NumRawDefaults()
 		defaultParameters := make([]*model_starlark_pb.Function_Closure_DefaultParameter, 0, numRawDefaults)
 		for index := 0; index < numRawDefaults; index++ {

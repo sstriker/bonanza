@@ -433,6 +433,12 @@ func (s *Struct[TReference, TMetadata]) EncodeValue(path map[starlark.Value]stru
 	), needsCode, nil
 }
 
+// isGlobalReferenceEncodable marks structs that are bound to persisted
+// globals of the file that is currently being compiled as being
+// encodable as references to those globals, allowing structs that are
+// defined recursively to be encoded.
+func (s *Struct[TReference, TMetadata]) isGlobalReferenceEncodable() {}
+
 // GetProviderIdentifier returns the identifier of the provider that was
 // used to construct this Starlark struct value. This method fails if
 // this Starlark struct value was created by calling struct(), as

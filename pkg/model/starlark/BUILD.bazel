@@ -64,6 +64,7 @@ go_library(
 go_test(
     name = "starlark_test",
     srcs = [
+        "encode_compiled_program_test.go",
         "mocks_encoding_test.go",
         "mocks_label_test.go",
         "mocks_starlark_test.go",
@@ -75,12 +76,15 @@ go_test(
         "//pkg/label",
         "//pkg/model/core",
         "//pkg/model/core/inlinedtree",
+        "//pkg/model/encoding",
         "//pkg/proto/model/starlark",
         "//pkg/proto/storage/object",
         "//pkg/storage/object",
         "@com_github_buildbarn_bb_storage//pkg/testutil",
         "@com_github_buildbarn_bb_storage//pkg/util",
         "@com_github_stretchr_testify//require",
+        "@net_starlark_go//starlark",
+        "@net_starlark_go//syntax",
         "@org_uber_go_mock//gomock",
     ],
 )

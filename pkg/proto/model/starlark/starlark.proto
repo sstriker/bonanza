@@ -44,6 +44,24 @@ message Value {
     ToolchainType toolchain_type = 27;
     Transition transition = 28;
     Tuple tuple = 29;
+
+    // Reference to a global of a compiled .bzl file, stored in the
+    // form of a canonical Starlark identifier (e.g.
+    // "@@rules_python+//python/private:flags.bzl%PrecompileFlag").
+    //
+    // This kind is emitted to break reference cycles that re-enter a
+    // global of the file being compiled (e.g. enum-like structs whose
+    // method lambdas capture the struct itself through a closure
+    // cell). Encoders may only emit this kind at positions at or
+    // beneath Function.Closure (default_parameters or
+    // free_variables). This guarantees that decoders only observe it
+    // while lazily materializing a function at its first call, which
+    // happens strictly after the referenced file's decoded globals
+    // have been computed and frozen. It never occurs in eagerly
+    // decoded positions such as list, dict or set elements, as
+    // resolving it there would cause decoding of the file's own
+    // globals to cycle.
+    string global_reference = 31;
   }
 }
 

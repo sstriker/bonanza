@@ -258,6 +258,7 @@ type Value struct {
 	//	*Value_ToolchainType
 	//	*Value_Transition
 	//	*Value_Tuple
+	//	*Value_GlobalReference
 	Kind          isValue_Kind `protobuf_oneof:"kind"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -561,6 +562,15 @@ func (x *Value) GetTuple() *Tuple {
 	return nil
 }
 
+func (x *Value) GetGlobalReference() string {
+	if x != nil {
+		if x, ok := x.Kind.(*Value_GlobalReference); ok {
+			return x.GlobalReference
+		}
+	}
+	return ""
+}
+
 type isValue_Kind interface {
 	isValue_Kind()
 }
@@ -681,6 +691,10 @@ type Value_Tuple struct {
 	Tuple *Tuple `protobuf:"bytes,29,opt,name=tuple,proto3,oneof"`
 }
 
+type Value_GlobalReference struct {
+	GlobalReference string `protobuf:"bytes,31,opt,name=global_reference,json=globalReference,proto3,oneof"`
+}
+
 func (*Value_Aspect) isValue_Kind() {}
 
 func (*Value_Attr) isValue_Kind() {}
@@ -738,6 +752,8 @@ func (*Value_ToolchainType) isValue_Kind() {}
 func (*Value_Transition) isValue_Kind() {}
 
 func (*Value_Tuple) isValue_Kind() {}
+
+func (*Value_GlobalReference) isValue_Kind() {}
 
 type Alias struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
@@ -5788,7 +5804,7 @@ const file_bonanza_build_pkg_proto_model_starlark_starlark_proto_rawDesc = "" +
 	"5bonanza.build/pkg/proto/model/starlark/starlark.proto\x12\x16bonanza.model.starlark\x1a-bonanza.build/pkg/proto/model/core/core.proto\x1a\x1bgoogle/protobuf/empty.proto\"f\n" +
 	"\x0fCompiledProgram\x12?\n" +
 	"\aglobals\x18\x01 \x01(\v2%.bonanza.model.starlark.Struct.FieldsR\aglobals\x12\x12\n" +
-	"\x04code\x18\x02 \x01(\fR\x04code\"\xbf\f\n" +
+	"\x04code\x18\x02 \x01(\fR\x04code\"\xec\f\n" +
 	"\x05Value\x128\n" +
 	"\x06aspect\x18\x01 \x01(\v2\x1e.bonanza.model.starlark.AspectH\x00R\x06aspect\x122\n" +
 	"\x04attr\x18\x02 \x01(\v2\x1c.bonanza.model.starlark.AttrH\x00R\x04attr\x12\x14\n" +
@@ -5822,7 +5838,8 @@ const file_bonanza_build_pkg_proto_model_starlark_starlark_proto_rawDesc = "" +
 	"\n" +
 	"transition\x18\x1c \x01(\v2\".bonanza.model.starlark.TransitionH\x00R\n" +
 	"transition\x125\n" +
-	"\x05tuple\x18\x1d \x01(\v2\x1d.bonanza.model.starlark.TupleH\x00R\x05tupleB\x06\n" +
+	"\x05tuple\x18\x1d \x01(\v2\x1d.bonanza.model.starlark.TupleH\x00R\x05tuple\x12+\n" +
+	"\x10global_reference\x18\x1f \x01(\tH\x00R\x0fglobalReferenceB\x06\n" +
 	"\x04kind\"\x8b\x01\n" +
 	"\x05Alias\x12<\n" +
 	"\x06actual\x18\x01 \x01(\v2$.bonanza.model.starlark.Select.GroupR\x06actual\x12D\n" +
@@ -6501,6 +6518,7 @@ func file_bonanza_build_pkg_proto_model_starlark_starlark_proto_init() {
 		(*Value_ToolchainType)(nil),
 		(*Value_Transition)(nil),
 		(*Value_Tuple)(nil),
+		(*Value_GlobalReference)(nil),
 	}
 	file_bonanza_build_pkg_proto_model_starlark_starlark_proto_msgTypes[3].OneofWrappers = []any{
 		(*Aspect_Reference)(nil),

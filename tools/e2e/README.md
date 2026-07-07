@@ -15,7 +15,10 @@ worker's virtual file system and bb_runner), and the resulting artifact
 contents are all correct. Among other things it exercises
 `attr.int_list()`, `native.repo_name()`, `native.repository_name()`,
 `native.module_name()`, `native.module_version()`,
-`native.package_name()`, and `Label.workspace_name`. The build is run
+`native.package_name()`, and `Label.workspace_name`. It also loads
+rules_python's flags.bzl and calls a method on one of its enum-like
+structs (whose method closures capture the struct itself), covering
+the encoding of recursively defined Starlark values. The build is run
 twice; the second invocation should complete in seconds, served from
 the evaluation cache.
 
