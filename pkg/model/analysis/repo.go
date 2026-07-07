@@ -1528,6 +1528,7 @@ type moduleOrRepositoryContext[TReference object.BasicReference, TMetadata model
 	fileReader                         *model_filesystem.FileReader[TReference]
 	pathUnpackerInto                   unpack.UnpackerInto[*model_starlark.BarePath]
 	repoPlatform                       model_core.Message[*model_analysis_pb.RegisteredRepoPlatform_Value, TReference]
+	stableInputRootPath                *model_starlark.BarePath
 	virtualRootScopeWalkerFactory      *path.VirtualRootScopeWalkerFactory
 
 	inputRootDirectory *changeTrackingDirectory[TReference, TMetadata]
@@ -1661,6 +1662,7 @@ func (mrc *moduleOrRepositoryContext[TReference, TMetadata]) maybeGetStableInput
 		}
 
 		mrc.defaultWorkingDirectoryPath = defaultWorkingDirectoryPath
+		mrc.stableInputRootPath = stableInputRootPath
 
 		externalPath := stableInputRootPath.Append(model_starlark.ComponentExternal)
 		mrc.externalPath = externalPath
@@ -3278,6 +3280,7 @@ func (mrc *moduleOrRepositoryContext[TReference, TMetadata]) relativizeSymlinks(
 		environment:                   mrc.environment,
 		directoryLoadOptions:          mrc.directoryLoadOptions,
 		virtualRootScopeWalkerFactory: mrc.virtualRootScopeWalkerFactory,
+		rootPath:                      mrc.stableInputRootPath,
 	}
 	return sr.relativizeSymlinksRecursively(dStack, dPath, maximumEscapementLevels)
 }
