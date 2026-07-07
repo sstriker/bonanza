@@ -384,6 +384,38 @@ func (c *baseComputer[TReference, TMetadata]) ComputeConfiguredAspectValue(ctx c
 		execGroupPlatformLabels[namedExecGroup.Name] = resolvedToolchains.Message.PlatformLabel
 	}
 
+	// Resolve the toolchains that the aspect itself declares through
+	// aspect(toolchains = ...), so that they can be exposed through
+	// ctx.toolchains. These form the aspect's own default execution
+	// group, which carries no execution constraints, as aspect()
+	// takes no exec_compatible_with.
+	var aspectExecGroup ruleContextExecGroupState
+	if aspectToolchains := aspectDefinition.Message.Toolchains; len(aspectToolchains) > 0 {
+		patchedConfigurationReference := model_core.Patch(e, configurationReference)
+		resolvedToolchains := e.GetResolvedToolchainsValue(
+			model_core.NewPatchedMessage(
+				&model_analysis_pb.ResolvedToolchains_Key{
+					ConfigurationReference: patchedConfigurationReference.Message,
+					Toolchains:             aspectToolchains,
+				},
+				patchedConfigurationReference.Patcher,
+			),
+		)
+		if !resolvedToolchains.IsSet() {
+			missingDependencies = true
+		} else {
+			toolchainIdentifiers := resolvedToolchains.Message.ToolchainIdentifiers
+			if actual, expected := len(toolchainIdentifiers), len(aspectToolchains); actual != expected {
+				return PatchedConfiguredAspectValue[TMetadata]{}, fmt.Errorf("obtained %d resolved toolchains, while the aspect depends on %d toolchains", actual, expected)
+			}
+			aspectExecGroup = ruleContextExecGroupState{
+				platformPkixPublicKey: resolvedToolchains.Message.PlatformPkixPublicKey,
+				toolchainIdentifiers:  toolchainIdentifiers,
+				toolchainInfos:        make([]starlark.Value, len(toolchainIdentifiers)),
+			}
+		}
+	}
+
 	// Obtain the values of the attrs of the rule target to which
 	// the aspect is applied, so that they can be exposed through
 	// ctx.rule.attr. For attrs listed in the aspect's attr_aspects,
@@ -560,6 +592,18 @@ func (c *baseComputer[TReference, TMetadata]) ComputeConfiguredAspectValue(ctx c
 			"attr": model_starlark.NewStructFromDict[TReference, TMetadata](nil, attrValues),
 			"kind": starlark.String(ruleIdentifier.GetStarlarkIdentifier().String()),
 		}),
+		// Unlike rules, aspects have no implementation function
+		// wrapper that synthesizes ctx.toolchains from
+		// ctx.exec_groups, so it is provided directly.
+		"toolchains": &toolchainContext[TReference, TMetadata]{
+			computer:               c,
+			context:                ctx,
+			environment:            e,
+			configurationReference: configurationReference,
+			description:            fmt.Sprintf("aspect %#v", aspectIdentifier.String()),
+			toolchains:             model_core.Nested(aspectDefinition, aspectDefinition.Message.Toolchains),
+			state:                  &aspectExecGroup,
+		},
 		// TODO: Provide the actual Make variables.
 		"var": ctxVar,
 	})
@@ -626,6 +670,20 @@ func (c *baseComputer[TReference, TMetadata]) ComputeConfiguredAspectValue(ctx c
 				return nil, err
 			}
 			encodedProviderInstances = append(encodedProviderInstances, v.Merge(patcher))
+		}
+
+		// The aspect may advertise providers through
+		// aspect(provides = ...). It is an error if the
+		// implementation function omits any of them from its
+		// return value.
+		for _, providesIdentifier := range aspectDefinition.Message.Provides {
+			declaredIdentifier, err := label.NewCanonicalStarlarkIdentifier(providesIdentifier)
+			if err != nil {
+				return nil, fmt.Errorf("invalid provider identifier %#v in aspect(provides = ...): %w", providesIdentifier, err)
+			}
+			if _, ok := providersSeen[declaredIdentifier]; !ok {
+				return nil, fmt.Errorf("aspect %#v did not return a value for provider %#v, which it declares through aspect(provides = ...)", aspectIdentifier.String(), providesIdentifier)
+			}
 		}
 
 		slices.SortFunc(encodedProviderInstances, func(a, b *model_starlark_pb.Struct) int {

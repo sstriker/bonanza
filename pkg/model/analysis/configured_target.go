@@ -1683,10 +1683,25 @@ func (c *baseComputer[TReference, TMetadata]) ComputeConfiguredTargetValue(ctx c
 			// If the rule did not return an instance of
 			// DefaultInfo, inject an empty instance.
 			if _, ok := providersSeen[defaultInfoProviderIdentifier]; !ok {
+				providersSeen[defaultInfoProviderIdentifier] = struct{}{}
 				encodedProviderInstances = append(
 					encodedProviderInstances,
 					model_core.Patch(e, emptyDefaultInfo).Merge(patcher),
 				)
+			}
+
+			// The rule may advertise providers through
+			// rule(provides = ...). It is an error if the
+			// implementation function omits any of them
+			// from its return value.
+			for _, providesIdentifier := range ruleDefinition.Message.Provides {
+				declaredIdentifier, err := label.NewCanonicalStarlarkIdentifier(providesIdentifier)
+				if err != nil {
+					return nil, fmt.Errorf("invalid provider identifier %#v in rule(provides = ...): %w", providesIdentifier, err)
+				}
+				if _, ok := providersSeen[declaredIdentifier]; !ok {
+					return nil, fmt.Errorf("implementation function did not return a value for provider %#v, which the rule declares through rule(provides = ...)", providesIdentifier)
+				}
 			}
 
 			slices.SortFunc(encodedProviderInstances, func(a, b *model_starlark_pb.Struct) int {
@@ -3345,17 +3360,46 @@ func (rca *ruleContextExecGroups[TReference, TMetadata]) Get(thread *starlark.Th
 	if !ok {
 		return nil, false, fmt.Errorf("rule does not have an exec group with name %#v", execGroupName)
 	}
+	execGroupDefinition := execGroups[execGroupIndex].ExecGroup
+	if execGroupDefinition == nil {
+		return nil, false, errors.New("rule definition lacks exec group definition")
+	}
 	return model_starlark.NewStructFromDict[TReference, TMetadata](nil, map[string]any{
 		"toolchains": &toolchainContext[TReference, TMetadata]{
-			ruleContext:    rc,
-			execGroupIndex: execGroupIndex,
+			computer:               rc.computer,
+			context:                rc.context,
+			environment:            rc.environment,
+			configurationReference: rc.configurationReference,
+			description:            fmt.Sprintf("exec group %#v", execGroupName),
+			toolchains:             model_core.Nested(rc.ruleDefinition, execGroupDefinition.Toolchains),
+			state:                  &rc.execGroups[execGroupIndex],
 		},
 	}), true, nil
 }
 
+// toolchainContextEnvironment contains the subset of the methods of
+// ConfiguredTargetEnvironment and ConfiguredAspectEnvironment that
+// toolchainContext needs to look up ToolchainInfo providers of
+// resolved toolchains.
+type toolchainContextEnvironment[TReference any, TMetadata model_core.ReferenceMetadata] interface {
+	model_core.ObjectManager[TReference, TMetadata]
+	GetTargetProviderValue(key model_core.PatchedMessage[*model_analysis_pb.TargetProvider_Key, TMetadata]) model_core.Message[*model_analysis_pb.TargetProvider_Value, TReference]
+}
+
+// toolchainContext implements the mapping that is exposed through
+// ctx.exec_groups[name].toolchains on rules (from which the wrappers
+// in builtins_core derive ctx.toolchains) and through ctx.toolchains
+// on aspects. Lookups of resolved toolchains cause their
+// ToolchainInfo providers to be loaded and cached in the associated
+// execution group state.
 type toolchainContext[TReference object.BasicReference, TMetadata model_core.ReferenceMetadata] struct {
-	ruleContext    *ruleContext[TReference, TMetadata]
-	execGroupIndex int
+	computer               *baseComputer[TReference, TMetadata]
+	context                context.Context
+	environment            toolchainContextEnvironment[TReference, TMetadata]
+	configurationReference model_core.Message[*model_core_pb.DecodableReference, TReference]
+	description            string
+	toolchains             model_core.Message[[]*model_starlark_pb.ToolchainType, TReference]
+	state                  *ruleContextExecGroupState
 }
 
 var _ starlark.Mapping = (*toolchainContext[object.GlobalReference, model_core.ReferenceMetadata])(nil)
@@ -3380,43 +3424,35 @@ func (toolchainContext[TReference, TMetadata]) Hash(thread *starlark.Thread) (ui
 }
 
 func (tc *toolchainContext[TReference, TMetadata]) Get(thread *starlark.Thread, v starlark.Value) (starlark.Value, bool, error) {
-	rc := tc.ruleContext
 	labelUnpackerInto := unpack.Stringer(model_starlark.NewLabelOrStringUnpackerInto[TReference, TMetadata](model_starlark.CurrentFilePackage(thread, 0)))
 	var toolchainType string
 	if err := labelUnpackerInto.UnpackInto(thread, v, &toolchainType); err != nil {
 		return nil, false, err
 	}
 
-	namedExecGroup := rc.ruleDefinition.Message.ExecGroups[tc.execGroupIndex]
-	execGroupDefinition := namedExecGroup.ExecGroup
-	if execGroupDefinition == nil {
-		return nil, false, errors.New("rule definition lacks exec group definition")
-	}
-
-	toolchains := execGroupDefinition.Toolchains
+	toolchains := tc.toolchains.Message
 	toolchainIndex, ok := sort.Find(
 		len(toolchains),
 		func(i int) int { return strings.Compare(toolchainType, toolchains[i].ToolchainType) },
 	)
 	if !ok {
-		return nil, false, fmt.Errorf("exec group %#v does not depend on toolchain type %#v", namedExecGroup.Name, toolchainType)
+		return nil, false, fmt.Errorf("%s does not depend on toolchain type %#v", tc.description, toolchainType)
 	}
 
-	execGroup := &rc.execGroups[tc.execGroupIndex]
-	toolchainInfo := execGroup.toolchainInfos[toolchainIndex]
+	toolchainInfo := tc.state.toolchainInfos[toolchainIndex]
 	if toolchainInfo == nil {
-		toolchainIdentifier := execGroup.toolchainIdentifiers[toolchainIndex]
+		toolchainIdentifier := tc.state.toolchainIdentifiers[toolchainIndex]
 		if toolchainIdentifier == "" {
 			// Toolchain was optional, and no matching
 			// toolchain was found.
 			toolchainInfo = starlark.None
 		} else {
 			encodedToolchainInfo, err := getProviderFromConfiguredTarget(
-				rc.environment,
+				tc.environment,
 				toolchainIdentifier,
 				model_core.Patch(
-					rc.environment,
-					rc.configurationReference,
+					tc.environment,
+					tc.configurationReference,
 				),
 				toolchainInfoProviderIdentifier,
 			)
@@ -3431,7 +3467,7 @@ func (tc *toolchainContext[TReference, TMetadata]) Get(thread *starlark.Thread, 
 					},
 					Fields: encodedToolchainInfo.Message,
 				}),
-				rc.computer.getValueDecodingOptions(rc.context, func(resolvedLabel label.ResolvedLabel) (starlark.Value, error) {
+				tc.computer.getValueDecodingOptions(tc.context, func(resolvedLabel label.ResolvedLabel) (starlark.Value, error) {
 					return model_starlark.NewLabel[TReference, TMetadata](resolvedLabel), nil
 				}),
 			)
@@ -3439,7 +3475,7 @@ func (tc *toolchainContext[TReference, TMetadata]) Get(thread *starlark.Thread, 
 				return nil, true, err
 			}
 		}
-		execGroup.toolchainInfos[toolchainIndex] = toolchainInfo
+		tc.state.toolchainInfos[toolchainIndex] = toolchainInfo
 	}
 	return toolchainInfo, true, nil
 }

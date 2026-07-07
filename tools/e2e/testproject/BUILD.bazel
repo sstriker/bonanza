@@ -8,6 +8,8 @@ load(
     "marked_node",
     "marked_reader",
     "node",
+    "probe_toolchain",
+    "toolchain_probe_reader",
 )
 load(":defs.bzl", "repo_info", "setting_reader", "verify_native_apis")
 
@@ -128,6 +130,30 @@ composed_reader(
     deps = [":mid_a"],
 )
 
+# toolchain_probe_aspect declares a mandatory toolchain type with a
+# registered implementation and an optional one without. Both must be
+# observable through ctx.toolchains inside the aspect's implementation
+# function.
+toolchain_type(name = "aspect_toolchain_type")
+
+toolchain_type(name = "optional_toolchain_type")
+
+probe_toolchain(
+    name = "probe_toolchain_impl",
+    value = "probe-value",
+)
+
+toolchain(
+    name = "probe_toolchain",
+    toolchain = ":probe_toolchain_impl",
+    toolchain_type = ":aspect_toolchain_type",
+)
+
+toolchain_probe_reader(
+    name = "toolchain_probe",
+    deps = [":leaf"],
+)
+
 # Verifies, on the worker, that the artifacts produced by the targets
 # above have the expected contents. If any assertion fails, the build
 # fails.
@@ -148,6 +174,7 @@ genrule(
         ":hello",
         ":marked_labels",
         ":repo_info",
+        ":toolchain_probe",
         ":transitioned_mode",
     ],
     outs = ["verify.txt"],
@@ -159,6 +186,7 @@ genrule(
           "grep -qF 'dict_top: [@@testproject+//:leaf, @@testproject+//:mid_a, @@testproject+//:dict_top]' $(location :dict_node_labels) && " +
           "grep -qF 'marked_top: [@@testproject+//:marked_inner, @@testproject+//:marked_mid, @@testproject+//:marked_top]' $(location :marked_labels) && " +
           "! grep -q 'marked_leaf' $(location :marked_labels) && " +
+          "grep -qF 'resolved=probe-value optional=True' $(location :toolchain_probe) && " +
           "grep -q 'Hello from patched bonanza' $(location :hello) && " +
           "grep -q 'module=testproject' $(location :repo_info) && " +
           "grep -q 'version=None' $(location :repo_info) && " +
@@ -182,6 +210,7 @@ filegroup(
         ":hello",
         ":marked_labels",
         ":repo_info",
+        ":toolchain_probe",
         ":transitioned_mode",
         ":verify",
         ":verify_repo_conformance",

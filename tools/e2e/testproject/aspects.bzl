@@ -10,9 +10,11 @@ Additional rules and aspects assert propagation across
 attr.string_keyed_label_dict() attributes, filtering based on
 required_providers against providers advertised through
 rule(provides = ...), aspect composition through requires and
-required_aspect_providers, and materialization of an aspect's own
+required_aspect_providers, materialization of an aspect's own
 attrs (a configured private label attr and a string parameter)
-through ctx.attr.
+through ctx.attr, and resolution of aspect(toolchains = ...) into
+ctx.toolchains (both a registered mandatory toolchain and an
+optional toolchain type without a registered implementation).
 """
 
 load("@bazel_skylib//lib:partial.bzl", "partial")
@@ -80,6 +82,10 @@ collector_aspect = aspect(
         "deps",
         "tools",
     ],
+    # Declared providers must be returned by the implementation
+    # function; a regression in either the encoding or the
+    # enforcement of provides fails the build.
+    provides = [TransitiveInfo],
     attrs = {
         "_marker": attr.label(
             default = ":leaf",
@@ -266,5 +272,56 @@ composed_reader = rule(
     implementation = _composed_reader_impl,
     attrs = {
         "deps": attr.label_list(aspects = [c_aspect]),
+    },
+)
+
+ToolchainProbeInfo = provider(
+    doc = "Computed by toolchain_probe_aspect from ctx.toolchains.",
+    fields = ["text"],
+)
+
+# A trivial toolchain implementation whose ToolchainInfo carries a
+# recognizable value, so that toolchain_probe_aspect can prove that
+# it observed the registered toolchain through ctx.toolchains.
+def _probe_toolchain_impl(ctx):
+    return [platform_common.ToolchainInfo(value = ctx.attr.value)]
+
+probe_toolchain = rule(
+    implementation = _probe_toolchain_impl,
+    attrs = {
+        "value": attr.string(mandatory = True),
+    },
+    provides = [platform_common.ToolchainInfo],
+)
+
+# The aspect's toolchains are resolved against the configuration of
+# the target it is applied to. The mandatory toolchain type has a
+# registered implementation, while the optional one does not and must
+# therefore yield None.
+def _toolchain_probe_aspect_impl(target, ctx):
+    return [ToolchainProbeInfo(text = "resolved={} optional={}".format(
+        ctx.toolchains["//:aspect_toolchain_type"].value,
+        ctx.toolchains["//:optional_toolchain_type"] == None,
+    ))]
+
+toolchain_probe_aspect = aspect(
+    implementation = _toolchain_probe_aspect_impl,
+    provides = [ToolchainProbeInfo],
+    toolchains = [
+        "//:aspect_toolchain_type",
+        config_common.toolchain_type("//:optional_toolchain_type", mandatory = False),
+    ],
+)
+
+def _toolchain_probe_reader_impl(ctx):
+    lines = [dep[ToolchainProbeInfo].text for dep in ctx.attr.deps]
+    out = ctx.actions.declare_file(ctx.label.name + ".txt")
+    ctx.actions.write(out, "\n".join(lines) + "\n")
+    return [DefaultInfo(files = depset([out]))]
+
+toolchain_probe_reader = rule(
+    implementation = _toolchain_probe_reader_impl,
+    attrs = {
+        "deps": attr.label_list(aspects = [toolchain_probe_aspect]),
     },
 )

@@ -479,8 +479,10 @@ func GetBuiltins[TReference object.BasicReference, TMetadata model_core.Referenc
 						return nil, fmt.Errorf("%s: aspect attribute %#v is private and must therefore have a default value", b.Name(), name.String())
 					}
 				}
-				// TODO: toolchains are currently parsed, but
-				// ignored.
+				// Just like for rules, the aspect's toolchains
+				// form a default execution group. As aspect()
+				// takes no exec_compatible_with, it carries no
+				// execution constraints of its own.
 				return NewAspect[TReference, TMetadata](nil, NewStarlarkAspectDefinition(
 					attrAspects,
 					attrs,
@@ -489,6 +491,7 @@ func GetBuiltins[TReference object.BasicReference, TMetadata model_core.Referenc
 					requiredAspectProviders,
 					requires,
 					provides,
+					NewExecGroup( /* execCompatibleWith = */ nil, toolchains),
 				)), nil
 			},
 		),

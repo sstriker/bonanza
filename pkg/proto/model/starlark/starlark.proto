@@ -99,6 +99,13 @@ message Aspect {
     // are either private (name starting with an underscore) or
     // string typed parameters, and always carry a default value.
     repeated NamedAttr attrs = 7;
+
+    // Set of toolchains this aspect requires, deduplicated and
+    // sorted alphabetically by toolchain type. They are resolved
+    // against the configuration of the target to which the aspect
+    // is applied and exposed to the implementation function through
+    // ctx.toolchains.
+    repeated ToolchainType toolchains = 8;
   }
 
   oneof kind {

@@ -120,10 +120,13 @@ type starlarkAspectDefinition[TReference object.BasicReference, TMetadata model_
 	requiredAspectProviders [][]*Provider[TReference, TMetadata]
 	requires                []*Aspect[TReference, TMetadata]
 	provides                []*Provider[TReference, TMetadata]
+	execGroup               *ExecGroup[TReference, TMetadata]
 }
 
 // NewStarlarkAspectDefinition creates the definition of an aspect,
 // given the parameters that were provided to the aspect() function.
+// The aspect's toolchains are provided in the form of a default
+// execution group, mirroring how rules store their toolchains.
 func NewStarlarkAspectDefinition[TReference object.BasicReference, TMetadata model_core.ReferenceMetadata](
 	attrAspects []string,
 	attrs map[pg_label.StarlarkIdentifier]*Attr[TReference, TMetadata],
@@ -132,6 +135,7 @@ func NewStarlarkAspectDefinition[TReference object.BasicReference, TMetadata mod
 	requiredAspectProviders [][]*Provider[TReference, TMetadata],
 	requires []*Aspect[TReference, TMetadata],
 	provides []*Provider[TReference, TMetadata],
+	execGroup *ExecGroup[TReference, TMetadata],
 ) AspectDefinition[TReference, TMetadata] {
 	return &starlarkAspectDefinition[TReference, TMetadata]{
 		attrAspects:             attrAspects,
@@ -141,6 +145,7 @@ func NewStarlarkAspectDefinition[TReference object.BasicReference, TMetadata mod
 		requiredAspectProviders: requiredAspectProviders,
 		requires:                requires,
 		provides:                provides,
+		execGroup:               execGroup,
 	}
 }
 
@@ -187,6 +192,7 @@ func (ad *starlarkAspectDefinition[TReference, TMetadata]) Encode(path map[starl
 			RequiredAspectProviders: requiredAspectProviders,
 			Requires:                requires,
 			Provides:                provides,
+			Toolchains:              ad.execGroup.Encode().Toolchains,
 		},
 		patcher,
 	), needsCode, nil
