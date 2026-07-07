@@ -276,6 +276,42 @@ get_config = _make()
 		require.Equal(t, []string{"name"}, flagStruct.Fields.Keys)
 	})
 
+	t.Run("TupleGlobalsDoNotPanic", func(t *testing.T) {
+		// Tuples are backed by slices and cannot be used as Go map
+		// keys. A public global bound to a tuple, or a tuple
+		// captured as a closure's free variable, used to panic with
+		// "hash of unhashable type: starlark.Tuple" when it was
+		// looked up in the set of globals that may be encoded by
+		// name. Such tuples are simply not aliasable and must encode
+		// without incident.
+		_, compiledProgram, err := compileAndEncodeProgram(t, canonicalLabel, `
+MY_TUPLE = (1, 2, 3)
+
+def _make():
+    captured = (MY_TUPLE, "x")
+    return lambda: captured
+
+get_captured = _make()
+`, bzlFileBuiltins)
+		require.NoError(t, err)
+
+		encodedGlobals := compiledProgram.Message.GetGlobals()
+		require.Equal(t, []string{"MY_TUPLE", "get_captured"}, encodedGlobals.Keys)
+
+		// The tuple global is encoded verbatim as a list of its
+		// elements, not as a reference to itself.
+		myTuple := encodedGlobals.Values[0].GetLeaf().GetTuple()
+		require.NotNil(t, myTuple)
+		require.Len(t, myTuple.Elements, 3)
+
+		// The tuple captured by the closure is likewise inlined
+		// rather than emitted as a global reference.
+		closure := encodedGlobals.Values[1].GetLeaf().GetFunction().GetClosure()
+		require.NotNil(t, closure)
+		require.Len(t, closure.FreeVariables, 1)
+		require.NotNil(t, closure.FreeVariables[0].GetTuple())
+	})
+
 	t.Run("SelfReferentialListStillFails", func(t *testing.T) {
 		// Cycles that do not pass through a function closure
 		// would end up at eagerly decoded positions, which

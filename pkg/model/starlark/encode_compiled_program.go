@@ -149,6 +149,36 @@ type globalReferenceEncodable interface {
 	isGlobalReferenceEncodable()
 }
 
+// isAliasableGlobalValue reports whether a global bound to value may be
+// referenced by name from closures within the same file. Only reference
+// types with meaningful identity qualify. Value types such as booleans,
+// strings and integers are excluded, as encoding those by name would
+// cause unrelated but equal values to become aliased. starlark.Tuple is
+// excluded as well: slices lack identity, and, being unhashable, cannot
+// be used as Go map keys. Functions, rules, providers and similar types
+// already have reference based encodings of their own.
+func isAliasableGlobalValue(value starlark.Value) bool {
+	switch value.(type) {
+	case globalReferenceEncodable, *starlark.List, *starlark.Dict, *starlark.Set:
+		return true
+	default:
+		return false
+	}
+}
+
+// lookupGlobalIdentifier resolves the canonical identifier that a value
+// may be encoded as a reference to. It returns ok == false for value
+// types that are not aliasable, guarding the map lookup so that it never
+// panics with "hash of unhashable type" on unhashable values such as
+// starlark.Tuple.
+func lookupGlobalIdentifier(globalIdentifiers map[starlark.Value]pg_label.CanonicalStarlarkIdentifier, value starlark.Value) (pg_label.CanonicalStarlarkIdentifier, bool) {
+	if !isAliasableGlobalValue(value) {
+		return pg_label.CanonicalStarlarkIdentifier{}, false
+	}
+	identifier, ok := globalIdentifiers[value]
+	return identifier, ok
+}
+
 // EncodeCompiledProgram converts a Starlark program to a Protobuf
 // message, so that it can be written to storage.
 func EncodeCompiledProgram[TReference any, TMetadata model_core.ReferenceMetadata](program *starlark.Program, globals starlark.StringDict, options *ValueEncodingOptions[TReference, TMetadata]) (model_core.PatchedMessage[*model_starlark_pb.CompiledProgram, TMetadata], error) {
@@ -171,18 +201,7 @@ func EncodeCompiledProgram[TReference any, TMetadata model_core.ReferenceMetadat
 			if _, ok := value.(NamedGlobal); !ok && !identifier.IsPublic() {
 				continue
 			}
-			switch value.(type) {
-			case globalReferenceEncodable, *starlark.List, *starlark.Dict, *starlark.Set:
-				// Value types such as booleans, strings
-				// and integers must remain excluded, as
-				// encoding those by name would cause
-				// unrelated equal values to become
-				// aliased. starlark.Tuple must remain
-				// excluded, as slices are not comparable
-				// and cannot be used as map keys.
-				// Functions, rules, providers and
-				// similar types already have reference
-				// based encodings of their own.
+			if isAliasableGlobalValue(value) {
 				if _, ok := globalIdentifiers[value]; !ok {
 					// If the same value is bound to
 					// multiple globals, deterministically
@@ -221,7 +240,7 @@ func EncodeCompiledProgram[TReference any, TMetadata model_core.ReferenceMetadat
 			// encoded, so that methods returning the value
 			// preserve the identity of the global through which
 			// they were reached.
-			previousIdentifier, valueIsAliasable := options.globalIdentifiers[value]
+			previousIdentifier, valueIsAliasable := lookupGlobalIdentifier(options.globalIdentifiers, value)
 			if valueIsAliasable {
 				options.globalIdentifiers[value] = *currentIdentifier
 			}
@@ -474,7 +493,7 @@ func EncodeValue[TReference any, TMetadata model_core.ReferenceMetadata](value s
 // positions when containing values such as structs are re-encoded into
 // other files verbatim.
 func encodeClosureValue[TReference any, TMetadata model_core.ReferenceMetadata](value starlark.Value, path map[starlark.Value]struct{}, options *ValueEncodingOptions[TReference, TMetadata]) (model_core.PatchedMessage[*model_starlark_pb.Value, TMetadata], bool, error) {
-	if identifier, ok := options.globalIdentifiers[value]; ok {
+	if identifier, ok := lookupGlobalIdentifier(options.globalIdentifiers, value); ok {
 		return model_core.NewSimplePatchedMessage[TMetadata](&model_starlark_pb.Value{
 			Kind: &model_starlark_pb.Value_GlobalReference{
 				GlobalReference: identifier.String(),
