@@ -278,19 +278,19 @@ func providerIdentifierStrings[TReference object.BasicReference, TMetadata model
 // provided to aspect(required_providers = ...) and
 // aspect(required_aspect_providers = ...), to a canonical and
 // deterministic Protobuf encoding: each set is sorted and deduplicated,
-// and the sets themselves are sorted and deduplicated as well. As an
-// empty set is satisfied by any list of advertised providers, the
-// requirement as a whole is trivially satisfiable in that case and is
-// encoded as the empty list.
+// and the sets themselves are sorted and deduplicated as well. Empty
+// sets are not permitted, as required_providers and
+// required_aspect_providers assign different meanings to the empty
+// list encoding.
 func encodeRequiredProviderSets[TReference object.BasicReference, TMetadata model_core.ReferenceMetadata](providerSets [][]*Provider[TReference, TMetadata]) ([]*model_starlark_pb.Aspect_Definition_RequiredProviderSet, error) {
 	encodedSets := make([]*model_starlark_pb.Aspect_Definition_RequiredProviderSet, 0, len(providerSets))
-	for _, providers := range providerSets {
+	for i, providers := range providerSets {
 		identifiers, err := providerIdentifierStrings[TReference, TMetadata](providers)
 		if err != nil {
 			return nil, err
 		}
 		if len(identifiers) == 0 {
-			return nil, nil
+			return nil, fmt.Errorf("provider set at index %d is empty", i)
 		}
 		encodedSets = append(encodedSets, &model_starlark_pb.Aspect_Definition_RequiredProviderSet{
 			ProviderIdentifiers: identifiers,
