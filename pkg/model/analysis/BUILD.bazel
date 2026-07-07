@@ -53,6 +53,7 @@ go_library(
         "package.go",
         "package_group_contains.go",
         "packages_at_and_below.go",
+        "parameter_file.go",
         "raw_action_result.go",
         "registered_execution_platforms.go",
         "registered_fetch_platform.go",
@@ -145,6 +146,7 @@ go_test(
         "mocks_encoding_test.go",
         "mocks_filesystem_pool_test.go",
         "mocks_filesystem_test.go",
+        "parameter_file_test.go",
     ],
     embed = [":analysis"],
     deps = [

@@ -192,8 +192,20 @@ toolchain_probe_reader(
 # action_edges_aspect observes the actions registered by
 # action_edges_node through target.actions. The report must show the
 # FileWrite mnemonic for write(), the Symlink mnemonic for both
-# flavors of symlink(), and output Files whose is_directory and
-# is_symlink properties match the declaration.
+# flavors of symlink(), output Files whose is_directory and is_symlink
+# properties match the declaration, and content matching the bytes
+# that building the output would yield: the exact string for
+# write(content=<str>), the substituted template for
+# expand_template(), the rendered parameter file for
+# write(content=<Args>) in both the default "shell" and the
+# "multiline" format, and None for actions whose content cannot be
+# computed during the analysis phase (run(), symlink(), and Args
+# referencing a directory).
+#
+# The template is referenced by action_edges_node's private _template
+# attribute, which on its own does not declare a source file target.
+exports_files(["action_edges_template.txt"])
+
 action_edges_node(name = "action_edges_node")
 
 action_edges_reader(
@@ -239,9 +251,18 @@ genrule(
           "! grep -q 'marked_leaf' $(location :marked_labels) && " +
           "grep -qF 'resolved=probe-value optional=True' $(location :toolchain_probe) && " +
           "grep -qF 'FileWrite -> action_edges_node.write.txt[F]' $(location :action_edges) && " +
+          "grep -qF 'TemplateExpand -> action_edges_node.expand.txt[F]' $(location :action_edges) && " +
           "grep -qF 'MakeDirectory -> action_edges_node.dir[D]' $(location :action_edges) && " +
           "grep -qF 'Symlink -> action_edges_node.sym[L]' $(location :action_edges) && " +
           "grep -qF 'Symlink -> action_edges_node.symfile[F]' $(location :action_edges) && " +
+          "grep -qF 'content action_edges_node.write.txt = \"hello\\n\"' $(location :action_edges) && " +
+          "grep -qF 'content action_edges_node.expand.txt = \"name=conformance\\ngreeting=hello\\n\"' $(location :action_edges) && " +
+          "grep -qF 'content action_edges_node.args.txt = \"--foo\\n'\\''hello world'\\''\\n\"' $(location :action_edges) && " +
+          "grep -qF 'content action_edges_node.multi.txt = \"a b\\nc\\n\"' $(location :action_edges) && " +
+          "grep -qF 'content action_edges_node.argsdir.txt = None' $(location :action_edges) && " +
+          "grep -qF 'content action_edges_node.dir = None' $(location :action_edges) && " +
+          "grep -qF 'content action_edges_node.sym = None' $(location :action_edges) && " +
+          "grep -qF 'content action_edges_node.symfile = None' $(location :action_edges) && " +
           "grep -q 'Hello from patched bonanza' $(location :hello) && " +
           "grep -q 'module=testproject' $(location :repo_info) && " +
           "grep -q 'version=None' $(location :repo_info) && " +

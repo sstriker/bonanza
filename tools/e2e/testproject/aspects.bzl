@@ -16,8 +16,9 @@ through ctx.attr, resolution of aspect(toolchains = ...) into
 ctx.toolchains (both a registered mandatory toolchain and an
 optional toolchain type without a registered implementation), and
 observation of a target's registered actions through target.actions
-(mnemonics of synthesized actions and the declared types of their
-output Files).
+(mnemonics of synthesized actions, the declared types of their
+output Files, and the content of files created through
+ctx.actions.write() and expand_template()).
 """
 
 load("@bazel_skylib//lib:partial.bzl", "partial")
@@ -335,13 +336,39 @@ ActionEdgesInfo = provider(
 )
 
 # A rule that registers one output of each flavor that is not backed
-# by a command: ctx.actions.write(), both flavors of
-# ctx.actions.symlink(), and a directory output produced by
-# ctx.actions.run(), so that action_edges_aspect can observe the
-# synthesized Action structs.
+# by a command: ctx.actions.write() with both string and Args content,
+# ctx.actions.expand_template(), both flavors of ctx.actions.symlink(),
+# and a directory output produced by ctx.actions.run(), so that
+# action_edges_aspect can observe the synthesized Action structs.
 def _action_edges_node_impl(ctx):
     out_write = ctx.actions.declare_file(ctx.label.name + ".write.txt")
     ctx.actions.write(out_write, "hello\n")
+
+    out_expand = ctx.actions.declare_file(ctx.label.name + ".expand.txt")
+    ctx.actions.expand_template(
+        template = ctx.file._template,
+        output = out_expand,
+        substitutions = {
+            "{GREETING}": "hello",
+            "{NAME}": "conformance",
+        },
+    )
+
+    # Args rendered in the default "shell" parameter file format.
+    args_shell = ctx.actions.args()
+    args_shell.add("--foo")
+    args_shell.add("hello world")
+    out_args = ctx.actions.declare_file(ctx.label.name + ".args.txt")
+    ctx.actions.write(out_args, args_shell)
+
+    # set_param_file_format() must be honored even though
+    # use_param_file() is never called.
+    args_multiline = ctx.actions.args()
+    args_multiline.set_param_file_format("multiline")
+    args_multiline.add("a b")
+    args_multiline.add("c")
+    out_multiline = ctx.actions.declare_file(ctx.label.name + ".multi.txt")
+    ctx.actions.write(out_multiline, args_multiline)
 
     out_dir = ctx.actions.declare_directory(ctx.label.name + ".dir")
     ctx.actions.run(
@@ -350,6 +377,13 @@ def _action_edges_node_impl(ctx):
         outputs = [out_dir],
         mnemonic = "MakeDirectory",
     )
+
+    # Args referencing a directory cannot be rendered during the
+    # analysis phase, so the content of this action must be None.
+    args_dir = ctx.actions.args()
+    args_dir.add_all([out_dir])
+    out_args_dir = ctx.actions.declare_file(ctx.label.name + ".argsdir.txt")
+    ctx.actions.write(out_args_dir, args_dir)
 
     out_symlink = ctx.actions.declare_symlink(ctx.label.name + ".sym")
     ctx.actions.symlink(
@@ -367,12 +401,22 @@ def _action_edges_node_impl(ctx):
 
 action_edges_node = rule(
     implementation = _action_edges_node_impl,
+    attrs = {
+        "_template": attr.label(
+            allow_single_file = True,
+            default = ":action_edges_template.txt",
+        ),
+    },
 )
 
 # The Action structs observed through target.actions must carry
 # mnemonics matching the API through which they were registered
-# (FileWrite for write(), Symlink for both flavors of symlink()), and
-# their output Files must report is_directory/is_symlink as declared.
+# (FileWrite for write(), TemplateExpand for expand_template(), and
+# Symlink for both flavors of symlink()), their output Files must
+# report is_directory/is_symlink as declared, and their content field
+# must expose the bytes that building the output would yield for
+# write() and expand_template(), or None for actions whose content
+# cannot be computed during the analysis phase.
 def _action_edges_aspect_impl(target, ctx):
     lines = []
     for a in target.actions:
@@ -384,6 +428,7 @@ def _action_edges_aspect_impl(target, ctx):
             elif f.is_symlink:
                 mark = "L"
             outs.append("{}[{}]".format(f.basename, mark))
+            lines.append("content {} = {}".format(f.basename, repr(a.content)))
         lines.append("{} -> {}".format(a.mnemonic, ", ".join(sorted(outs))))
     return [ActionEdgesInfo(lines = sorted(lines))]
 

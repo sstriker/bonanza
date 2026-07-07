@@ -3340,6 +3340,12 @@ func (rca *ruleContextActions[TReference, TMetadata]) doWrite(thread *starlark.T
 						Write: &model_analysis_pb.TargetOutputDefinition_Write{
 							Content:      encodedContent.Merge(patcher),
 							IsExecutable: isExecutable,
+							// Unlike the format stored in
+							// UseParamFile, this is recorded even
+							// if Args.use_param_file() was never
+							// called, as set_param_file_format()
+							// can be used independently of it.
+							ParamFileFormat: typedContent.paramFileFormat,
 						},
 					},
 				}

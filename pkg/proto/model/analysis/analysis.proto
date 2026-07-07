@@ -642,6 +642,12 @@ message TargetOutputDefinition {
 
     // Whether the output file is executable.
     bool is_executable = 2;
+
+    // The format in which the arguments are rendered to the output
+    // file, as set through Args.set_param_file_format() at the time
+    // ctx.actions.write() was called. Defaults to SHELL, matching
+    // Bazel.
+    Args.Leaf.UseParamFile.Format param_file_format = 3;
   }
 
   message SymlinkTargetPath {

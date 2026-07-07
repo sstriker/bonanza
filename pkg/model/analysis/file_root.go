@@ -33,7 +33,6 @@ type getStarlarkFilePropertiesEnvironment[TReference any, TMetadata model_core.R
 	model_core.ExistingObjectCapturer[TReference, TMetadata]
 
 	GetDirectoryReadersValue(key *model_analysis_pb.DirectoryReaders_Key) (*DirectoryReaders[TReference], bool)
-	GetFilePropertiesValue(key *model_analysis_pb.FileProperties_Key) model_core.Message[*model_analysis_pb.FileProperties_Value, TReference]
 	GetFileRootValue(key model_core.PatchedMessage[*model_analysis_pb.FileRoot_Key, TMetadata]) model_core.Message[*model_analysis_pb.FileRoot_Value, TReference]
 }
 

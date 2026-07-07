@@ -6367,11 +6367,12 @@ func (x *TargetOutputDefinition_Symlink) GetIsExecutable() bool {
 }
 
 type TargetOutputDefinition_Write struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Content       *Args_Leaf             `protobuf:"bytes,1,opt,name=content,proto3" json:"content,omitempty"`
-	IsExecutable  bool                   `protobuf:"varint,2,opt,name=is_executable,json=isExecutable,proto3" json:"is_executable,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	state           protoimpl.MessageState        `protogen:"open.v1"`
+	Content         *Args_Leaf                    `protobuf:"bytes,1,opt,name=content,proto3" json:"content,omitempty"`
+	IsExecutable    bool                          `protobuf:"varint,2,opt,name=is_executable,json=isExecutable,proto3" json:"is_executable,omitempty"`
+	ParamFileFormat Args_Leaf_UseParamFile_Format `protobuf:"varint,3,opt,name=param_file_format,json=paramFileFormat,proto3,enum=bonanza.model.analysis.Args_Leaf_UseParamFile_Format" json:"param_file_format,omitempty"`
+	unknownFields   protoimpl.UnknownFields
+	sizeCache       protoimpl.SizeCache
 }
 
 func (x *TargetOutputDefinition_Write) Reset() {
@@ -6416,6 +6417,13 @@ func (x *TargetOutputDefinition_Write) GetIsExecutable() bool {
 		return x.IsExecutable
 	}
 	return false
+}
+
+func (x *TargetOutputDefinition_Write) GetParamFileFormat() Args_Leaf_UseParamFile_Format {
+	if x != nil {
+		return x.ParamFileFormat
+	}
+	return Args_Leaf_UseParamFile_MULTILINE
 }
 
 type TargetOutputDefinition_SymlinkTargetPath struct {
@@ -13633,7 +13641,8 @@ const file_bonanza_build_pkg_proto_model_analysis_analysis_proto_rawDesc = "" +
 	"\x18initial_output_directory\x18\x06 \x01(\v2#.bonanza.model.filesystem.DirectoryR\x16initialOutputDirectory\x12H\n" +
 	"\x03env\x18\a \x03(\v26.bonanza.model.command.EnvironmentVariableList.ElementR\x03env\x121\n" +
 	"\x15use_default_shell_env\x18\b \x01(\bR\x12useDefaultShellEnv\x12\x1a\n" +
-	"\bmnemonic\x18\t \x01(\tR\bmnemonic\"\xa5\t\n" +
+	"\bmnemonic\x18\t \x01(\tR\bmnemonic\"\x89\n" +
+	"\n" +
 	"\x16TargetOutputDefinition\x12D\n" +
 	"\tfile_type\x18\x01 \x01(\x0e2'.bonanza.model.starlark.File.Owner.TypeR\bfileType\x12\x1d\n" +
 	"\taction_id\x18\x02 \x01(\fH\x00R\bactionId\x12h\n" +
@@ -13651,10 +13660,11 @@ const file_bonanza_build_pkg_proto_model_analysis_analysis_proto_rawDesc = "" +
 	"\vreplacement\x18\x02 \x01(\fR\vreplacement\x1ad\n" +
 	"\aSymlink\x124\n" +
 	"\x06target\x18\x01 \x01(\v2\x1c.bonanza.model.starlark.FileR\x06target\x12#\n" +
-	"\ris_executable\x18\x02 \x01(\bR\fisExecutable\x1ai\n" +
+	"\ris_executable\x18\x02 \x01(\bR\fisExecutable\x1a\xcc\x01\n" +
 	"\x05Write\x12;\n" +
 	"\acontent\x18\x01 \x01(\v2!.bonanza.model.analysis.Args.LeafR\acontent\x12#\n" +
-	"\ris_executable\x18\x02 \x01(\bR\fisExecutable\x1a4\n" +
+	"\ris_executable\x18\x02 \x01(\bR\fisExecutable\x12a\n" +
+	"\x11param_file_format\x18\x03 \x01(\x0e25.bonanza.model.analysis.Args.Leaf.UseParamFile.FormatR\x0fparamFileFormat\x1a4\n" +
 	"\x11SymlinkTargetPath\x12\x1f\n" +
 	"\vtarget_path\x18\x01 \x01(\tR\n" +
 	"targetPathB\b\n" +
@@ -14551,111 +14561,112 @@ var file_bonanza_build_pkg_proto_model_analysis_analysis_proto_depIdxs = []int32
 	141, // 68: bonanza.model.analysis.TargetOutputDefinition.ExpandTemplate.substitutions:type_name -> bonanza.model.analysis.TargetOutputDefinition.ExpandTemplate.Substitution
 	306, // 69: bonanza.model.analysis.TargetOutputDefinition.Symlink.target:type_name -> bonanza.model.starlark.File
 	128, // 70: bonanza.model.analysis.TargetOutputDefinition.Write.content:type_name -> bonanza.model.analysis.Args.Leaf
-	288, // 71: bonanza.model.analysis.ConfiguredAspect.Key.configuration_reference:type_name -> bonanza.model.core.DecodableReference
-	307, // 72: bonanza.model.analysis.ConfiguredAspect.Value.provider_instances:type_name -> bonanza.model.starlark.Struct
-	288, // 73: bonanza.model.analysis.ConfiguredTarget.Key.configuration_reference:type_name -> bonanza.model.core.DecodableReference
-	307, // 74: bonanza.model.analysis.ConfiguredTarget.Value.provider_instances:type_name -> bonanza.model.starlark.Struct
-	146, // 75: bonanza.model.analysis.ConfiguredTarget.Value.outputs:type_name -> bonanza.model.analysis.ConfiguredTarget.Value.Output
-	147, // 76: bonanza.model.analysis.ConfiguredTarget.Value.actions:type_name -> bonanza.model.analysis.ConfiguredTarget.Value.Action
-	149, // 77: bonanza.model.analysis.ConfiguredTarget.Value.Output.leaf:type_name -> bonanza.model.analysis.ConfiguredTarget.Value.Output.Leaf
-	148, // 78: bonanza.model.analysis.ConfiguredTarget.Value.Output.parent:type_name -> bonanza.model.analysis.ConfiguredTarget.Value.Output.Parent
-	151, // 79: bonanza.model.analysis.ConfiguredTarget.Value.Action.leaf:type_name -> bonanza.model.analysis.ConfiguredTarget.Value.Action.Leaf
-	150, // 80: bonanza.model.analysis.ConfiguredTarget.Value.Action.parent:type_name -> bonanza.model.analysis.ConfiguredTarget.Value.Action.Parent
-	288, // 81: bonanza.model.analysis.ConfiguredTarget.Value.Output.Parent.reference:type_name -> bonanza.model.core.DecodableReference
-	22,  // 82: bonanza.model.analysis.ConfiguredTarget.Value.Output.Leaf.definition:type_name -> bonanza.model.analysis.TargetOutputDefinition
-	288, // 83: bonanza.model.analysis.ConfiguredTarget.Value.Action.Parent.reference:type_name -> bonanza.model.core.DecodableReference
-	21,  // 84: bonanza.model.analysis.ConfiguredTarget.Value.Action.Leaf.definition:type_name -> bonanza.model.analysis.TargetActionDefinition
-	288, // 85: bonanza.model.analysis.TargetOutput.Key.configuration_reference:type_name -> bonanza.model.core.DecodableReference
-	22,  // 86: bonanza.model.analysis.TargetOutput.Value.definition:type_name -> bonanza.model.analysis.TargetOutputDefinition
-	308, // 87: bonanza.model.analysis.DirectoryAccessParameters.Value.directory_access_parameters:type_name -> bonanza.model.filesystem.DirectoryAccessParameters
-	299, // 88: bonanza.model.analysis.DirectoryCreationParameters.Value.directory_creation_parameters:type_name -> bonanza.model.filesystem.DirectoryCreationParameters
-	307, // 89: bonanza.model.analysis.EmptyDefaultInfo.Value.default_info:type_name -> bonanza.model.starlark.Struct
-	288, // 90: bonanza.model.analysis.ExecTransition.Key.input_configuration_reference:type_name -> bonanza.model.core.DecodableReference
-	288, // 91: bonanza.model.analysis.ExecTransition.Value.output_configuration_reference:type_name -> bonanza.model.core.DecodableReference
-	309, // 92: bonanza.model.analysis.FileAccessParameters.Value.file_access_parameters:type_name -> bonanza.model.filesystem.FileAccessParameters
-	300, // 93: bonanza.model.analysis.FileCreationParameters.Value.file_creation_parameters:type_name -> bonanza.model.filesystem.FileCreationParameters
-	310, // 94: bonanza.model.analysis.FileProperties.Value.exists:type_name -> bonanza.model.filesystem.FileProperties
-	306, // 95: bonanza.model.analysis.FileRoot.Key.file:type_name -> bonanza.model.starlark.File
-	0,   // 96: bonanza.model.analysis.FileRoot.Key.directory_layout:type_name -> bonanza.model.analysis.DirectoryLayout
-	295, // 97: bonanza.model.analysis.FileRoot.Value.root_directory:type_name -> bonanza.model.filesystem.DirectoryContents
-	295, // 98: bonanza.model.analysis.FilesInPackage.Value.directory:type_name -> bonanza.model.filesystem.DirectoryContents
-	288, // 99: bonanza.model.analysis.FilesRoot.Key.list_reference:type_name -> bonanza.model.core.DecodableReference
-	0,   // 100: bonanza.model.analysis.FilesRoot.Key.directory_layout:type_name -> bonanza.model.analysis.DirectoryLayout
-	295, // 101: bonanza.model.analysis.FilesRoot.Value.root_directory:type_name -> bonanza.model.filesystem.DirectoryContents
-	41,  // 102: bonanza.model.analysis.HttpArchiveContents.Key.fetch_options:type_name -> bonanza.model.analysis.HttpFetchOptions
-	2,   // 103: bonanza.model.analysis.HttpArchiveContents.Key.format:type_name -> bonanza.model.analysis.HttpArchiveContents.Key.Format
-	182, // 104: bonanza.model.analysis.HttpArchiveContents.Value.exists:type_name -> bonanza.model.analysis.HttpArchiveContents.Value.Exists
-	301, // 105: bonanza.model.analysis.HttpArchiveContents.Value.Exists.contents:type_name -> bonanza.model.filesystem.DirectoryReference
-	41,  // 106: bonanza.model.analysis.HttpFileContents.Key.fetch_options:type_name -> bonanza.model.analysis.HttpFetchOptions
-	311, // 107: bonanza.model.analysis.HttpFileContents.Value.exists:type_name -> bonanza.model.fetch.Result.Success
-	312, // 108: bonanza.model.analysis.ModuleDotBazelContents.Value.contents:type_name -> bonanza.model.filesystem.FileContents
-	191, // 109: bonanza.model.analysis.ModuleRepoMapping.Value.mappings:type_name -> bonanza.model.analysis.ModuleRepoMapping.Value.Mapping
-	297, // 110: bonanza.model.analysis.ModuleExtensionRepo.Value.definition:type_name -> bonanza.model.starlark.Repo.Definition
-	198, // 111: bonanza.model.analysis.ModuleExtensionRepos.Value.repos:type_name -> bonanza.model.analysis.ModuleExtensionRepos.Value.Repo
-	313, // 112: bonanza.model.analysis.ModuleExtensionRepos.Value.Repo.leaf:type_name -> bonanza.model.starlark.Repo
-	199, // 113: bonanza.model.analysis.ModuleExtensionRepos.Value.Repo.parent:type_name -> bonanza.model.analysis.ModuleExtensionRepos.Value.Repo.Parent
-	288, // 114: bonanza.model.analysis.ModuleExtensionRepos.Value.Repo.Parent.reference:type_name -> bonanza.model.core.DecodableReference
-	50,  // 115: bonanza.model.analysis.ModuleFinalBuildList.Value.build_list:type_name -> bonanza.model.analysis.BuildListModule
-	50,  // 116: bonanza.model.analysis.ModuleRoughBuildList.Value.build_list:type_name -> bonanza.model.analysis.BuildListModule
-	53,  // 117: bonanza.model.analysis.ModulesWithMultipleVersions.Value.overrides_list:type_name -> bonanza.model.analysis.OverridesListModule
-	53,  // 118: bonanza.model.analysis.ModulesWithOverrides.Value.overrides_list:type_name -> bonanza.model.analysis.OverridesListModule
-	57,  // 119: bonanza.model.analysis.ModulesWithRemoteOverrides.Value.module_overrides:type_name -> bonanza.model.analysis.ModuleOverride
-	215, // 120: bonanza.model.analysis.Package.Value.targets:type_name -> bonanza.model.analysis.Package.Value.Target
-	314, // 121: bonanza.model.analysis.Package.Value.Target.leaf:type_name -> bonanza.model.starlark.Target
-	216, // 122: bonanza.model.analysis.Package.Value.Target.parent:type_name -> bonanza.model.analysis.Package.Value.Target.Parent
-	288, // 123: bonanza.model.analysis.Package.Value.Target.Parent.reference:type_name -> bonanza.model.core.DecodableReference
-	6,   // 124: bonanza.model.analysis.RawActionResult.Key.execute_request:type_name -> bonanza.model.analysis.ExecuteRequest
-	288, // 125: bonanza.model.analysis.RawActionResult.Value.result_reference:type_name -> bonanza.model.core.DecodableReference
-	64,  // 126: bonanza.model.analysis.RegisteredExecutionPlatforms.Value.execution_platforms:type_name -> bonanza.model.analysis.ExecutionPlatform
-	229, // 127: bonanza.model.analysis.RegisteredRepoPlatform.Value.repository_os_environ:type_name -> bonanza.model.analysis.RegisteredRepoPlatform.Value.EnvironmentVariable
-	63,  // 128: bonanza.model.analysis.RegisteredToolchain.CompatibleWith.exec:type_name -> bonanza.model.analysis.Constraint
-	63,  // 129: bonanza.model.analysis.RegisteredToolchain.CompatibleWith.target:type_name -> bonanza.model.analysis.Constraint
-	233, // 130: bonanza.model.analysis.RegisteredToolchains.Value.toolchain_types:type_name -> bonanza.model.analysis.RegisteredToolchains.Value.RegisteredToolchainType
-	68,  // 131: bonanza.model.analysis.RegisteredToolchains.Value.RegisteredToolchainType.toolchains:type_name -> bonanza.model.analysis.RegisteredToolchain
-	68,  // 132: bonanza.model.analysis.RegisteredToolchainsForType.Value.toolchains:type_name -> bonanza.model.analysis.RegisteredToolchain
-	301, // 133: bonanza.model.analysis.Repo.Value.root_directory_reference:type_name -> bonanza.model.filesystem.DirectoryReference
-	315, // 134: bonanza.model.analysis.RepoDefaultAttrs.Value.inheritable_attrs:type_name -> bonanza.model.starlark.InheritableAttrs
-	310, // 135: bonanza.model.analysis.RepoPlatformHostPath.Value.file:type_name -> bonanza.model.filesystem.FileProperties
-	295, // 136: bonanza.model.analysis.RepoPlatformHostPath.Value.directory:type_name -> bonanza.model.filesystem.DirectoryContents
-	63,  // 137: bonanza.model.analysis.ResolvedToolchains.Key.exec_compatible_with:type_name -> bonanza.model.analysis.Constraint
-	288, // 138: bonanza.model.analysis.ResolvedToolchains.Key.configuration_reference:type_name -> bonanza.model.core.DecodableReference
-	316, // 139: bonanza.model.analysis.ResolvedToolchains.Key.toolchains:type_name -> bonanza.model.starlark.ToolchainType
-	288, // 140: bonanza.model.analysis.Select.Key.configuration_reference:type_name -> bonanza.model.core.DecodableReference
-	6,   // 141: bonanza.model.analysis.SuccessfulActionResult.Key.execute_request:type_name -> bonanza.model.analysis.ExecuteRequest
-	288, // 142: bonanza.model.analysis.SuccessfulActionResult.Value.outputs_reference:type_name -> bonanza.model.core.DecodableReference
-	317, // 143: bonanza.model.analysis.Target.Value.definition:type_name -> bonanza.model.starlark.Target.Definition
-	82,  // 144: bonanza.model.analysis.TargetAction.Key.id:type_name -> bonanza.model.analysis.TargetActionId
-	21,  // 145: bonanza.model.analysis.TargetAction.Value.definition:type_name -> bonanza.model.analysis.TargetActionDefinition
-	82,  // 146: bonanza.model.analysis.TargetActionCommand.Key.id:type_name -> bonanza.model.analysis.TargetActionId
-	288, // 147: bonanza.model.analysis.TargetActionCommand.Value.command_reference:type_name -> bonanza.model.core.DecodableReference
-	82,  // 148: bonanza.model.analysis.TargetActionInputRoot.Key.id:type_name -> bonanza.model.analysis.TargetActionId
-	301, // 149: bonanza.model.analysis.TargetActionInputRoot.Value.input_root_reference:type_name -> bonanza.model.filesystem.DirectoryReference
-	82,  // 150: bonanza.model.analysis.TargetActionResult.Key.id:type_name -> bonanza.model.analysis.TargetActionId
-	295, // 151: bonanza.model.analysis.TargetActionResult.Value.output_root:type_name -> bonanza.model.filesystem.DirectoryContents
-	288, // 152: bonanza.model.analysis.TargetCompletion.Key.configuration_reference:type_name -> bonanza.model.core.DecodableReference
-	268, // 153: bonanza.model.analysis.TargetPatternExpansion.Value.target_labels:type_name -> bonanza.model.analysis.TargetPatternExpansion.Value.TargetLabel
-	269, // 154: bonanza.model.analysis.TargetPatternExpansion.Value.TargetLabel.parent:type_name -> bonanza.model.analysis.TargetPatternExpansion.Value.TargetLabel.Parent
-	288, // 155: bonanza.model.analysis.TargetPatternExpansion.Value.TargetLabel.Parent.reference:type_name -> bonanza.model.core.DecodableReference
-	288, // 156: bonanza.model.analysis.TargetProvider.Key.configuration_reference:type_name -> bonanza.model.core.DecodableReference
-	318, // 157: bonanza.model.analysis.TargetProvider.Value.fields:type_name -> bonanza.model.starlark.Struct.Fields
-	288, // 158: bonanza.model.analysis.TargetProviders.Key.configuration_reference:type_name -> bonanza.model.core.DecodableReference
-	307, // 159: bonanza.model.analysis.TargetProviders.Value.provider_instances:type_name -> bonanza.model.starlark.Struct
-	275, // 160: bonanza.model.analysis.ModuleExtension.User.tag_classes:type_name -> bonanza.model.analysis.ModuleExtension.TagClass
-	276, // 161: bonanza.model.analysis.ModuleExtension.TagClass.tags:type_name -> bonanza.model.analysis.ModuleExtension.Tag
-	318, // 162: bonanza.model.analysis.ModuleExtension.Tag.attrs:type_name -> bonanza.model.starlark.Struct.Fields
-	91,  // 163: bonanza.model.analysis.UsedModuleExtension.Value.module_extension:type_name -> bonanza.model.analysis.ModuleExtension
-	91,  // 164: bonanza.model.analysis.UsedModuleExtensions.Value.module_extensions:type_name -> bonanza.model.analysis.ModuleExtension
-	288, // 165: bonanza.model.analysis.UserDefinedTransition.Key.input_configuration_reference:type_name -> bonanza.model.core.DecodableReference
-	319, // 166: bonanza.model.analysis.UserDefinedTransition.Value.transition_depends_on_attrs:type_name -> google.protobuf.Empty
-	284, // 167: bonanza.model.analysis.UserDefinedTransition.Value.success:type_name -> bonanza.model.analysis.UserDefinedTransition.Value.Success
-	285, // 168: bonanza.model.analysis.UserDefinedTransition.Value.Success.entries:type_name -> bonanza.model.analysis.UserDefinedTransition.Value.Success.Entry
-	288, // 169: bonanza.model.analysis.UserDefinedTransition.Value.Success.Entry.output_configuration_reference:type_name -> bonanza.model.core.DecodableReference
-	288, // 170: bonanza.model.analysis.VisibleTarget.Key.configuration_reference:type_name -> bonanza.model.core.DecodableReference
-	171, // [171:171] is the sub-list for method output_type
-	171, // [171:171] is the sub-list for method input_type
-	171, // [171:171] is the sub-list for extension type_name
-	171, // [171:171] is the sub-list for extension extendee
-	0,   // [0:171] is the sub-list for field type_name
+	1,   // 71: bonanza.model.analysis.TargetOutputDefinition.Write.param_file_format:type_name -> bonanza.model.analysis.Args.Leaf.UseParamFile.Format
+	288, // 72: bonanza.model.analysis.ConfiguredAspect.Key.configuration_reference:type_name -> bonanza.model.core.DecodableReference
+	307, // 73: bonanza.model.analysis.ConfiguredAspect.Value.provider_instances:type_name -> bonanza.model.starlark.Struct
+	288, // 74: bonanza.model.analysis.ConfiguredTarget.Key.configuration_reference:type_name -> bonanza.model.core.DecodableReference
+	307, // 75: bonanza.model.analysis.ConfiguredTarget.Value.provider_instances:type_name -> bonanza.model.starlark.Struct
+	146, // 76: bonanza.model.analysis.ConfiguredTarget.Value.outputs:type_name -> bonanza.model.analysis.ConfiguredTarget.Value.Output
+	147, // 77: bonanza.model.analysis.ConfiguredTarget.Value.actions:type_name -> bonanza.model.analysis.ConfiguredTarget.Value.Action
+	149, // 78: bonanza.model.analysis.ConfiguredTarget.Value.Output.leaf:type_name -> bonanza.model.analysis.ConfiguredTarget.Value.Output.Leaf
+	148, // 79: bonanza.model.analysis.ConfiguredTarget.Value.Output.parent:type_name -> bonanza.model.analysis.ConfiguredTarget.Value.Output.Parent
+	151, // 80: bonanza.model.analysis.ConfiguredTarget.Value.Action.leaf:type_name -> bonanza.model.analysis.ConfiguredTarget.Value.Action.Leaf
+	150, // 81: bonanza.model.analysis.ConfiguredTarget.Value.Action.parent:type_name -> bonanza.model.analysis.ConfiguredTarget.Value.Action.Parent
+	288, // 82: bonanza.model.analysis.ConfiguredTarget.Value.Output.Parent.reference:type_name -> bonanza.model.core.DecodableReference
+	22,  // 83: bonanza.model.analysis.ConfiguredTarget.Value.Output.Leaf.definition:type_name -> bonanza.model.analysis.TargetOutputDefinition
+	288, // 84: bonanza.model.analysis.ConfiguredTarget.Value.Action.Parent.reference:type_name -> bonanza.model.core.DecodableReference
+	21,  // 85: bonanza.model.analysis.ConfiguredTarget.Value.Action.Leaf.definition:type_name -> bonanza.model.analysis.TargetActionDefinition
+	288, // 86: bonanza.model.analysis.TargetOutput.Key.configuration_reference:type_name -> bonanza.model.core.DecodableReference
+	22,  // 87: bonanza.model.analysis.TargetOutput.Value.definition:type_name -> bonanza.model.analysis.TargetOutputDefinition
+	308, // 88: bonanza.model.analysis.DirectoryAccessParameters.Value.directory_access_parameters:type_name -> bonanza.model.filesystem.DirectoryAccessParameters
+	299, // 89: bonanza.model.analysis.DirectoryCreationParameters.Value.directory_creation_parameters:type_name -> bonanza.model.filesystem.DirectoryCreationParameters
+	307, // 90: bonanza.model.analysis.EmptyDefaultInfo.Value.default_info:type_name -> bonanza.model.starlark.Struct
+	288, // 91: bonanza.model.analysis.ExecTransition.Key.input_configuration_reference:type_name -> bonanza.model.core.DecodableReference
+	288, // 92: bonanza.model.analysis.ExecTransition.Value.output_configuration_reference:type_name -> bonanza.model.core.DecodableReference
+	309, // 93: bonanza.model.analysis.FileAccessParameters.Value.file_access_parameters:type_name -> bonanza.model.filesystem.FileAccessParameters
+	300, // 94: bonanza.model.analysis.FileCreationParameters.Value.file_creation_parameters:type_name -> bonanza.model.filesystem.FileCreationParameters
+	310, // 95: bonanza.model.analysis.FileProperties.Value.exists:type_name -> bonanza.model.filesystem.FileProperties
+	306, // 96: bonanza.model.analysis.FileRoot.Key.file:type_name -> bonanza.model.starlark.File
+	0,   // 97: bonanza.model.analysis.FileRoot.Key.directory_layout:type_name -> bonanza.model.analysis.DirectoryLayout
+	295, // 98: bonanza.model.analysis.FileRoot.Value.root_directory:type_name -> bonanza.model.filesystem.DirectoryContents
+	295, // 99: bonanza.model.analysis.FilesInPackage.Value.directory:type_name -> bonanza.model.filesystem.DirectoryContents
+	288, // 100: bonanza.model.analysis.FilesRoot.Key.list_reference:type_name -> bonanza.model.core.DecodableReference
+	0,   // 101: bonanza.model.analysis.FilesRoot.Key.directory_layout:type_name -> bonanza.model.analysis.DirectoryLayout
+	295, // 102: bonanza.model.analysis.FilesRoot.Value.root_directory:type_name -> bonanza.model.filesystem.DirectoryContents
+	41,  // 103: bonanza.model.analysis.HttpArchiveContents.Key.fetch_options:type_name -> bonanza.model.analysis.HttpFetchOptions
+	2,   // 104: bonanza.model.analysis.HttpArchiveContents.Key.format:type_name -> bonanza.model.analysis.HttpArchiveContents.Key.Format
+	182, // 105: bonanza.model.analysis.HttpArchiveContents.Value.exists:type_name -> bonanza.model.analysis.HttpArchiveContents.Value.Exists
+	301, // 106: bonanza.model.analysis.HttpArchiveContents.Value.Exists.contents:type_name -> bonanza.model.filesystem.DirectoryReference
+	41,  // 107: bonanza.model.analysis.HttpFileContents.Key.fetch_options:type_name -> bonanza.model.analysis.HttpFetchOptions
+	311, // 108: bonanza.model.analysis.HttpFileContents.Value.exists:type_name -> bonanza.model.fetch.Result.Success
+	312, // 109: bonanza.model.analysis.ModuleDotBazelContents.Value.contents:type_name -> bonanza.model.filesystem.FileContents
+	191, // 110: bonanza.model.analysis.ModuleRepoMapping.Value.mappings:type_name -> bonanza.model.analysis.ModuleRepoMapping.Value.Mapping
+	297, // 111: bonanza.model.analysis.ModuleExtensionRepo.Value.definition:type_name -> bonanza.model.starlark.Repo.Definition
+	198, // 112: bonanza.model.analysis.ModuleExtensionRepos.Value.repos:type_name -> bonanza.model.analysis.ModuleExtensionRepos.Value.Repo
+	313, // 113: bonanza.model.analysis.ModuleExtensionRepos.Value.Repo.leaf:type_name -> bonanza.model.starlark.Repo
+	199, // 114: bonanza.model.analysis.ModuleExtensionRepos.Value.Repo.parent:type_name -> bonanza.model.analysis.ModuleExtensionRepos.Value.Repo.Parent
+	288, // 115: bonanza.model.analysis.ModuleExtensionRepos.Value.Repo.Parent.reference:type_name -> bonanza.model.core.DecodableReference
+	50,  // 116: bonanza.model.analysis.ModuleFinalBuildList.Value.build_list:type_name -> bonanza.model.analysis.BuildListModule
+	50,  // 117: bonanza.model.analysis.ModuleRoughBuildList.Value.build_list:type_name -> bonanza.model.analysis.BuildListModule
+	53,  // 118: bonanza.model.analysis.ModulesWithMultipleVersions.Value.overrides_list:type_name -> bonanza.model.analysis.OverridesListModule
+	53,  // 119: bonanza.model.analysis.ModulesWithOverrides.Value.overrides_list:type_name -> bonanza.model.analysis.OverridesListModule
+	57,  // 120: bonanza.model.analysis.ModulesWithRemoteOverrides.Value.module_overrides:type_name -> bonanza.model.analysis.ModuleOverride
+	215, // 121: bonanza.model.analysis.Package.Value.targets:type_name -> bonanza.model.analysis.Package.Value.Target
+	314, // 122: bonanza.model.analysis.Package.Value.Target.leaf:type_name -> bonanza.model.starlark.Target
+	216, // 123: bonanza.model.analysis.Package.Value.Target.parent:type_name -> bonanza.model.analysis.Package.Value.Target.Parent
+	288, // 124: bonanza.model.analysis.Package.Value.Target.Parent.reference:type_name -> bonanza.model.core.DecodableReference
+	6,   // 125: bonanza.model.analysis.RawActionResult.Key.execute_request:type_name -> bonanza.model.analysis.ExecuteRequest
+	288, // 126: bonanza.model.analysis.RawActionResult.Value.result_reference:type_name -> bonanza.model.core.DecodableReference
+	64,  // 127: bonanza.model.analysis.RegisteredExecutionPlatforms.Value.execution_platforms:type_name -> bonanza.model.analysis.ExecutionPlatform
+	229, // 128: bonanza.model.analysis.RegisteredRepoPlatform.Value.repository_os_environ:type_name -> bonanza.model.analysis.RegisteredRepoPlatform.Value.EnvironmentVariable
+	63,  // 129: bonanza.model.analysis.RegisteredToolchain.CompatibleWith.exec:type_name -> bonanza.model.analysis.Constraint
+	63,  // 130: bonanza.model.analysis.RegisteredToolchain.CompatibleWith.target:type_name -> bonanza.model.analysis.Constraint
+	233, // 131: bonanza.model.analysis.RegisteredToolchains.Value.toolchain_types:type_name -> bonanza.model.analysis.RegisteredToolchains.Value.RegisteredToolchainType
+	68,  // 132: bonanza.model.analysis.RegisteredToolchains.Value.RegisteredToolchainType.toolchains:type_name -> bonanza.model.analysis.RegisteredToolchain
+	68,  // 133: bonanza.model.analysis.RegisteredToolchainsForType.Value.toolchains:type_name -> bonanza.model.analysis.RegisteredToolchain
+	301, // 134: bonanza.model.analysis.Repo.Value.root_directory_reference:type_name -> bonanza.model.filesystem.DirectoryReference
+	315, // 135: bonanza.model.analysis.RepoDefaultAttrs.Value.inheritable_attrs:type_name -> bonanza.model.starlark.InheritableAttrs
+	310, // 136: bonanza.model.analysis.RepoPlatformHostPath.Value.file:type_name -> bonanza.model.filesystem.FileProperties
+	295, // 137: bonanza.model.analysis.RepoPlatformHostPath.Value.directory:type_name -> bonanza.model.filesystem.DirectoryContents
+	63,  // 138: bonanza.model.analysis.ResolvedToolchains.Key.exec_compatible_with:type_name -> bonanza.model.analysis.Constraint
+	288, // 139: bonanza.model.analysis.ResolvedToolchains.Key.configuration_reference:type_name -> bonanza.model.core.DecodableReference
+	316, // 140: bonanza.model.analysis.ResolvedToolchains.Key.toolchains:type_name -> bonanza.model.starlark.ToolchainType
+	288, // 141: bonanza.model.analysis.Select.Key.configuration_reference:type_name -> bonanza.model.core.DecodableReference
+	6,   // 142: bonanza.model.analysis.SuccessfulActionResult.Key.execute_request:type_name -> bonanza.model.analysis.ExecuteRequest
+	288, // 143: bonanza.model.analysis.SuccessfulActionResult.Value.outputs_reference:type_name -> bonanza.model.core.DecodableReference
+	317, // 144: bonanza.model.analysis.Target.Value.definition:type_name -> bonanza.model.starlark.Target.Definition
+	82,  // 145: bonanza.model.analysis.TargetAction.Key.id:type_name -> bonanza.model.analysis.TargetActionId
+	21,  // 146: bonanza.model.analysis.TargetAction.Value.definition:type_name -> bonanza.model.analysis.TargetActionDefinition
+	82,  // 147: bonanza.model.analysis.TargetActionCommand.Key.id:type_name -> bonanza.model.analysis.TargetActionId
+	288, // 148: bonanza.model.analysis.TargetActionCommand.Value.command_reference:type_name -> bonanza.model.core.DecodableReference
+	82,  // 149: bonanza.model.analysis.TargetActionInputRoot.Key.id:type_name -> bonanza.model.analysis.TargetActionId
+	301, // 150: bonanza.model.analysis.TargetActionInputRoot.Value.input_root_reference:type_name -> bonanza.model.filesystem.DirectoryReference
+	82,  // 151: bonanza.model.analysis.TargetActionResult.Key.id:type_name -> bonanza.model.analysis.TargetActionId
+	295, // 152: bonanza.model.analysis.TargetActionResult.Value.output_root:type_name -> bonanza.model.filesystem.DirectoryContents
+	288, // 153: bonanza.model.analysis.TargetCompletion.Key.configuration_reference:type_name -> bonanza.model.core.DecodableReference
+	268, // 154: bonanza.model.analysis.TargetPatternExpansion.Value.target_labels:type_name -> bonanza.model.analysis.TargetPatternExpansion.Value.TargetLabel
+	269, // 155: bonanza.model.analysis.TargetPatternExpansion.Value.TargetLabel.parent:type_name -> bonanza.model.analysis.TargetPatternExpansion.Value.TargetLabel.Parent
+	288, // 156: bonanza.model.analysis.TargetPatternExpansion.Value.TargetLabel.Parent.reference:type_name -> bonanza.model.core.DecodableReference
+	288, // 157: bonanza.model.analysis.TargetProvider.Key.configuration_reference:type_name -> bonanza.model.core.DecodableReference
+	318, // 158: bonanza.model.analysis.TargetProvider.Value.fields:type_name -> bonanza.model.starlark.Struct.Fields
+	288, // 159: bonanza.model.analysis.TargetProviders.Key.configuration_reference:type_name -> bonanza.model.core.DecodableReference
+	307, // 160: bonanza.model.analysis.TargetProviders.Value.provider_instances:type_name -> bonanza.model.starlark.Struct
+	275, // 161: bonanza.model.analysis.ModuleExtension.User.tag_classes:type_name -> bonanza.model.analysis.ModuleExtension.TagClass
+	276, // 162: bonanza.model.analysis.ModuleExtension.TagClass.tags:type_name -> bonanza.model.analysis.ModuleExtension.Tag
+	318, // 163: bonanza.model.analysis.ModuleExtension.Tag.attrs:type_name -> bonanza.model.starlark.Struct.Fields
+	91,  // 164: bonanza.model.analysis.UsedModuleExtension.Value.module_extension:type_name -> bonanza.model.analysis.ModuleExtension
+	91,  // 165: bonanza.model.analysis.UsedModuleExtensions.Value.module_extensions:type_name -> bonanza.model.analysis.ModuleExtension
+	288, // 166: bonanza.model.analysis.UserDefinedTransition.Key.input_configuration_reference:type_name -> bonanza.model.core.DecodableReference
+	319, // 167: bonanza.model.analysis.UserDefinedTransition.Value.transition_depends_on_attrs:type_name -> google.protobuf.Empty
+	284, // 168: bonanza.model.analysis.UserDefinedTransition.Value.success:type_name -> bonanza.model.analysis.UserDefinedTransition.Value.Success
+	285, // 169: bonanza.model.analysis.UserDefinedTransition.Value.Success.entries:type_name -> bonanza.model.analysis.UserDefinedTransition.Value.Success.Entry
+	288, // 170: bonanza.model.analysis.UserDefinedTransition.Value.Success.Entry.output_configuration_reference:type_name -> bonanza.model.core.DecodableReference
+	288, // 171: bonanza.model.analysis.VisibleTarget.Key.configuration_reference:type_name -> bonanza.model.core.DecodableReference
+	172, // [172:172] is the sub-list for method output_type
+	172, // [172:172] is the sub-list for method input_type
+	172, // [172:172] is the sub-list for extension type_name
+	172, // [172:172] is the sub-list for extension extendee
+	0,   // [0:172] is the sub-list for field type_name
 }
 
 func init() { file_bonanza_build_pkg_proto_model_analysis_analysis_proto_init() }
