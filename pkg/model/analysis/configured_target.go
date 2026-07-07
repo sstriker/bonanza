@@ -470,6 +470,8 @@ func (c *baseComputer[TReference, TMetadata]) configureAttrValueParts(
 		labelOptions = attrType.LabelKeyedStringDict.DictKeyOptions
 	case *model_starlark_pb.Attr_LabelList:
 		labelOptions = attrType.LabelList.ListValueOptions
+	case *model_starlark_pb.Attr_StringKeyedLabelDict:
+		labelOptions = attrType.StringKeyedLabelDict.DictValueOptions
 	}
 	cfg := labelOptions.GetCfg()
 
@@ -846,6 +848,7 @@ func (c *baseComputer[TReference, TMetadata]) ComputeConfiguredTargetValue(ctx c
 
 			switch namedAttr.Attr.GetType().(type) {
 			case *model_starlark_pb.Attr_Label, *model_starlark_pb.Attr_LabelList, *model_starlark_pb.Attr_LabelKeyedStringDict,
+				*model_starlark_pb.Attr_StringKeyedLabelDict,
 				*model_starlark_pb.Attr_Output, *model_starlark_pb.Attr_OutputList:
 				// Don't set these, as they depend on
 				// the configuration.
@@ -972,7 +975,8 @@ func (c *baseComputer[TReference, TMetadata]) ComputeConfiguredTargetValue(ctx c
 			}
 
 			switch namedAttr.Attr.GetType().(type) {
-			case *model_starlark_pb.Attr_Label, *model_starlark_pb.Attr_LabelList, *model_starlark_pb.Attr_LabelKeyedStringDict:
+			case *model_starlark_pb.Attr_Label, *model_starlark_pb.Attr_LabelList, *model_starlark_pb.Attr_LabelKeyedStringDict,
+				*model_starlark_pb.Attr_StringKeyedLabelDict:
 				continue GetNonLabelAttrValues
 			}
 
@@ -1129,6 +1133,8 @@ func (c *baseComputer[TReference, TMetadata]) ComputeConfiguredTargetValue(ctx c
 				labelOptions = attrType.LabelKeyedStringDict.DictKeyOptions
 			case *model_starlark_pb.Attr_LabelList:
 				labelOptions = attrType.LabelList.ListValueOptions
+			case *model_starlark_pb.Attr_StringKeyedLabelDict:
+				labelOptions = attrType.StringKeyedLabelDict.DictValueOptions
 			default:
 				panic("only label attr types should be processed at this point")
 			}

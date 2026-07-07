@@ -259,6 +259,51 @@ func aspectIdentifierStrings[TReference any, TMetadata model_core.ReferenceMetad
 	return slices.Compact(identifiers), nil
 }
 
+// providerIdentifierStrings converts a list of providers to a sorted
+// list of canonical Starlark identifier strings, so that they can be
+// recorded in rule and aspect definitions.
+func providerIdentifierStrings[TReference object.BasicReference, TMetadata model_core.ReferenceMetadata](providers []*Provider[TReference, TMetadata]) ([]string, error) {
+	identifiers := make([]string, 0, len(providers))
+	for i, provider := range providers {
+		if provider.Identifier == nil {
+			return nil, fmt.Errorf("provider at index %d does not have an identifier", i)
+		}
+		identifiers = append(identifiers, provider.Identifier.String())
+	}
+	sort.Strings(identifiers)
+	return slices.Compact(identifiers), nil
+}
+
+// encodeRequiredProviderSets converts a list of provider sets, as
+// provided to aspect(required_providers = ...) and
+// aspect(required_aspect_providers = ...), to a canonical and
+// deterministic Protobuf encoding: each set is sorted and deduplicated,
+// and the sets themselves are sorted and deduplicated as well. As an
+// empty set is satisfied by any list of advertised providers, the
+// requirement as a whole is trivially satisfiable in that case and is
+// encoded as the empty list.
+func encodeRequiredProviderSets[TReference object.BasicReference, TMetadata model_core.ReferenceMetadata](providerSets [][]*Provider[TReference, TMetadata]) ([]*model_starlark_pb.Aspect_Definition_RequiredProviderSet, error) {
+	encodedSets := make([]*model_starlark_pb.Aspect_Definition_RequiredProviderSet, 0, len(providerSets))
+	for _, providers := range providerSets {
+		identifiers, err := providerIdentifierStrings[TReference, TMetadata](providers)
+		if err != nil {
+			return nil, err
+		}
+		if len(identifiers) == 0 {
+			return nil, nil
+		}
+		encodedSets = append(encodedSets, &model_starlark_pb.Aspect_Definition_RequiredProviderSet{
+			ProviderIdentifiers: identifiers,
+		})
+	}
+	slices.SortFunc(encodedSets, func(a, b *model_starlark_pb.Aspect_Definition_RequiredProviderSet) int {
+		return slices.Compare(a.ProviderIdentifiers, b.ProviderIdentifiers)
+	})
+	return slices.CompactFunc(encodedSets, func(a, b *model_starlark_pb.Aspect_Definition_RequiredProviderSet) bool {
+		return slices.Equal(a.ProviderIdentifiers, b.ProviderIdentifiers)
+	}), nil
+}
+
 type labelAttrType[TReference any, TMetadata model_core.ReferenceMetadata] struct {
 	allowNone       bool
 	allowSingleFile bool

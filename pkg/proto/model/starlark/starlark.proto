@@ -66,6 +66,34 @@ message Aspect {
     // Starlark function that implements this aspect. It is invoked
     // with two positional arguments: (target, ctx).
     Function implementation = 2;
+
+    // A conjunction of providers that must all be advertised.
+    message RequiredProviderSet {
+      // Canonical Starlark identifiers of the providers, sorted
+      // alphabetically.
+      repeated string provider_identifiers = 1;
+    }
+
+    // The aspect is only applied to (and propagated through) rule
+    // targets whose rule advertises, via rule(provides = ...), all
+    // providers of at least one of these sets. If empty, the aspect
+    // is applied to all rule targets. Sets are sorted and
+    // deduplicated.
+    repeated RequiredProviderSet required_providers = 3;
+
+    // Providers that another aspect applied to the same target must
+    // advertise for its results to be visible to this aspect. The
+    // same matching rules as for required_providers apply.
+    repeated RequiredProviderSet required_aspect_providers = 4;
+
+    // Canonical Starlark identifiers of aspects that are applied to
+    // the same targets before this aspect and whose providers are
+    // visible to it, sorted alphabetically.
+    repeated string requires = 5;
+
+    // Canonical Starlark identifiers of providers that the
+    // implementation function must return, sorted alphabetically.
+    repeated string provides = 6;
   }
 
   oneof kind {

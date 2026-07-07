@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"sort"
 	"strings"
 
 	"bonanza.build/pkg/label"
@@ -32,10 +33,10 @@ type getTargetProvidersWithAspectsEnvironment[TReference any, TMetadata model_co
 
 // getTargetProvidersWithAspects obtains the provider instances of a
 // configured target, merged with the provider instances of any aspects
-// that the dependency edge along which the target is accessed requests.
-// The resulting list is sorted alphabetically by provider identifier,
-// which is the order in which consumers expect provider instances to be
-// stored.
+// that the dependency edge along which the target is accessed requests,
+// or that an aspect being applied to the target requires. The resulting
+// list is sorted alphabetically by provider identifier, which is the
+// order in which consumers expect provider instances to be stored.
 func getTargetProvidersWithAspects[TReference object.BasicReference, TMetadata model_core.ReferenceMetadata](
 	e getTargetProvidersWithAspectsEnvironment[TReference, TMetadata],
 	targetLabel string,
@@ -122,6 +123,56 @@ func getTargetProvidersWithAspects[TReference object.BasicReference, TMetadata m
 	return model_core.Unpatch(e, merged).Decay(), nil
 }
 
+type getAspectDefinitionEnvironment[TReference any] interface {
+	GetCompiledBzlFileGlobalValue(*model_analysis_pb.CompiledBzlFileGlobal_Key) model_core.Message[*model_analysis_pb.CompiledBzlFileGlobal_Value, TReference]
+}
+
+// getAspectDefinition obtains the definition of an aspect, given its
+// canonical Starlark identifier.
+func getAspectDefinition[TReference any](e getAspectDefinitionEnvironment[TReference], aspectIdentifier string) (model_core.Message[*model_starlark_pb.Aspect_Definition, TReference], error) {
+	aspectValue := e.GetCompiledBzlFileGlobalValue(&model_analysis_pb.CompiledBzlFileGlobal_Key{
+		Identifier: aspectIdentifier,
+	})
+	if !aspectValue.IsSet() {
+		return model_core.Message[*model_starlark_pb.Aspect_Definition, TReference]{}, evaluation.ErrMissingDependency
+	}
+	av, ok := aspectValue.Message.Global.GetKind().(*model_starlark_pb.Value_Aspect)
+	if !ok {
+		return model_core.Message[*model_starlark_pb.Aspect_Definition, TReference]{}, fmt.Errorf("%#v is not an aspect", aspectIdentifier)
+	}
+	ad, ok := av.Aspect.Kind.(*model_starlark_pb.Aspect_Definition_)
+	if !ok {
+		return model_core.Message[*model_starlark_pb.Aspect_Definition, TReference]{}, fmt.Errorf("%#v is not an aspect definition", aspectIdentifier)
+	}
+	return model_core.Nested(aspectValue, ad.Definition), nil
+}
+
+// requiredProviderSetsSatisfied returns whether a sorted list of
+// advertised providers satisfies at least one of the given sets of
+// required providers, meaning that all providers contained in that set
+// are advertised. An empty list of sets is trivially satisfied.
+func requiredProviderSetsSatisfied(requiredProviderSets []*model_starlark_pb.Aspect_Definition_RequiredProviderSet, advertisedProviders []string) bool {
+	if len(requiredProviderSets) == 0 {
+		return true
+	}
+	for _, requiredProviderSet := range requiredProviderSets {
+		satisfied := true
+		for _, providerIdentifier := range requiredProviderSet.ProviderIdentifiers {
+			if _, ok := sort.Find(
+				len(advertisedProviders),
+				func(i int) int { return strings.Compare(providerIdentifier, advertisedProviders[i]) },
+			); !ok {
+				satisfied = false
+				break
+			}
+		}
+		if satisfied {
+			return true
+		}
+	}
+	return false
+}
+
 func (c *baseComputer[TReference, TMetadata]) ComputeConfiguredAspectValue(ctx context.Context, key model_core.Message[*model_analysis_pb.ConfiguredAspect_Key, TReference], e ConfiguredAspectEnvironment[TReference, TMetadata]) (PatchedConfiguredAspectValue[TMetadata], error) {
 	targetLabel, err := label.NewCanonicalLabel(key.Message.Label)
 	if err != nil {
@@ -150,9 +201,10 @@ func (c *baseComputer[TReference, TMetadata]) ComputeConfiguredAspectValue(ctx c
 	ruleTarget := targetKind.RuleTarget
 
 	allBuiltinsModulesNames := e.GetBuiltinsModuleNamesValue(&model_analysis_pb.BuiltinsModuleNames_Key{})
-	aspectValue := e.GetCompiledBzlFileGlobalValue(&model_analysis_pb.CompiledBzlFileGlobal_Key{
-		Identifier: aspectIdentifier.String(),
-	})
+	aspectDefinition, aspectDefinitionErr := getAspectDefinition(e, aspectIdentifier.String())
+	if aspectDefinitionErr != nil && !errors.Is(aspectDefinitionErr, evaluation.ErrMissingDependency) {
+		return PatchedConfiguredAspectValue[TMetadata]{}, aspectDefinitionErr
+	}
 	patchedConfigurationReference := model_core.Patch(e, configurationReference)
 	targetProviders := e.GetTargetProvidersValue(
 		model_core.NewPatchedMessage(
@@ -164,7 +216,7 @@ func (c *baseComputer[TReference, TMetadata]) ComputeConfiguredAspectValue(ctx c
 		),
 	)
 	gotCommonDependencies := allBuiltinsModulesNames.IsSet() &&
-		aspectValue.IsSet() &&
+		aspectDefinitionErr == nil &&
 		targetProviders.IsSet()
 
 	var ruleIdentifier label.CanonicalStarlarkIdentifier
@@ -212,15 +264,81 @@ func (c *baseComputer[TReference, TMetadata]) ComputeConfiguredAspectValue(ctx c
 		return PatchedConfiguredAspectValue[TMetadata]{}, errors.New("rule target has neither a rule identifier, nor an inline rule definition")
 	}
 
-	av, ok := aspectValue.Message.Global.GetKind().(*model_starlark_pb.Value_Aspect)
-	if !ok {
-		return PatchedConfiguredAspectValue[TMetadata]{}, fmt.Errorf("%#v is not an aspect", aspectIdentifier.String())
+	// The aspect may require rule targets to advertise certain
+	// providers via rule(provides = ...). If the requirements are
+	// not met, the aspect is not applied to the target. This also
+	// prevents the aspect from propagating through the target, as
+	// the values of the target's attrs are no longer configured with
+	// the aspect attached.
+	if !requiredProviderSetsSatisfied(aspectDefinition.Message.RequiredProviders, ruleDefinition.Message.Provides) {
+		return model_core.NewSimplePatchedMessage[TMetadata](&model_analysis_pb.ConfiguredAspect_Value{}), nil
 	}
-	ad, ok := av.Aspect.Kind.(*model_starlark_pb.Aspect_Definition_)
-	if !ok {
-		return PatchedConfiguredAspectValue[TMetadata]{}, fmt.Errorf("%#v is not an aspect definition", aspectIdentifier.String())
+
+	// Compute the transitive closure of aspects that this aspect
+	// requires. Required aspects are applied to the same targets as
+	// this aspect, prior to this aspect being applied.
+	requiresClosure := map[string]model_core.Message[*model_starlark_pb.Aspect_Definition, TReference]{}
+	missingRequiredAspectDefinitions := false
+	for toVisit := aspectDefinition.Message.Requires; len(toVisit) > 0; {
+		var nextToVisit []string
+		for _, requiredAspectIdentifier := range toVisit {
+			if _, ok := requiresClosure[requiredAspectIdentifier]; ok {
+				continue
+			}
+			requiredAspectDefinition, err := getAspectDefinition(e, requiredAspectIdentifier)
+			if err != nil {
+				if !errors.Is(err, evaluation.ErrMissingDependency) {
+					return PatchedConfiguredAspectValue[TMetadata]{}, fmt.Errorf("required aspect %#v: %w", requiredAspectIdentifier, err)
+				}
+				// Continue to fetch the definitions of
+				// any other required aspects, so that
+				// they can be computed in parallel.
+				missingRequiredAspectDefinitions = true
+				continue
+			}
+			requiresClosure[requiredAspectIdentifier] = requiredAspectDefinition
+			nextToVisit = append(nextToVisit, requiredAspectDefinition.Message.Requires...)
+		}
+		toVisit = nextToVisit
 	}
-	aspectDefinition := model_core.Nested(aspectValue, ad.Definition)
+	if missingRequiredAspectDefinitions {
+		return PatchedConfiguredAspectValue[TMetadata]{}, evaluation.ErrMissingDependency
+	}
+	if _, ok := requiresClosure[aspectIdentifier.String()]; ok {
+		return PatchedConfiguredAspectValue[TMetadata]{}, fmt.Errorf("aspect %#v requires itself", aspectIdentifier.String())
+	}
+
+	// Determine which of the required aspects' providers should be
+	// visible to this aspect: those of aspects that are required
+	// directly, and those of aspects advertising providers that
+	// satisfy required_aspect_providers.
+	var visibleRequiredAspectIdentifiers []string
+	for requiredAspectIdentifier, requiredAspectDefinition := range requiresClosure {
+		if slices.Contains(aspectDefinition.Message.Requires, requiredAspectIdentifier) ||
+			(len(aspectDefinition.Message.RequiredAspectProviders) > 0 &&
+				requiredProviderSetsSatisfied(aspectDefinition.Message.RequiredAspectProviders, requiredAspectDefinition.Message.Provides)) {
+			visibleRequiredAspectIdentifiers = append(visibleRequiredAspectIdentifiers, requiredAspectIdentifier)
+		}
+	}
+
+	// Obtain the providers of the target itself, merged with those
+	// of the required aspects whose providers are visible, so that
+	// the implementation function can access them through the target
+	// argument. This is also what causes the required aspects to be
+	// applied prior to this aspect.
+	missingDependencies := false
+	targetProviderInstances, err := getTargetProvidersWithAspects(
+		e,
+		targetLabel.String(),
+		configurationReference,
+		visibleRequiredAspectIdentifiers,
+	)
+	if err != nil {
+		if !errors.Is(err, evaluation.ErrMissingDependency) {
+			return PatchedConfiguredAspectValue[TMetadata]{}, err
+		}
+		missingDependencies = true
+	}
 
 	thread := c.newStarlarkThread(ctx, e, allBuiltinsModulesNames.Message.BuiltinsModuleNames)
 	identifierGenerator, err := c.getReferenceEqualIdentifierGenerator(model_core.Nested(key, proto.Message(key.Message)))
@@ -233,7 +351,6 @@ func (c *baseComputer[TReference, TMetadata]) ComputeConfiguredAspectValue(ctx c
 	// attrs with cfg = "exec" need them to perform their
 	// transition.
 	targetPackage := targetLabel.GetCanonicalPackage()
-	missingDependencies := false
 	execGroupPlatformLabels := map[string]string{}
 	for _, namedExecGroup := range ruleDefinition.Message.ExecGroups {
 		execGroupDefinition := namedExecGroup.ExecGroup
@@ -304,9 +421,12 @@ func (c *baseComputer[TReference, TMetadata]) ComputeConfiguredAspectValue(ctx c
 		attrValues["target_compatible_with"] = v
 	}
 
+	// In addition to this aspect itself, also apply the required
+	// aspects whose providers are visible to dependencies, so that
+	// their providers can be accessed through ctx.rule.attr.
 	attrAspects := aspectDefinition.Message.AttrAspects
 	propagateToAllAttrs := slices.Contains(attrAspects, "*")
-	extraAspectIdentifiers := []string{aspectIdentifier.String()}
+	extraAspectIdentifiers := append(slices.Clone(visibleRequiredAspectIdentifiers), aspectIdentifier.String())
 
 	// Note that any incoming edge transition of the rule is not
 	// reapplied here, and that select() expressions are resolved
@@ -379,7 +499,7 @@ func (c *baseComputer[TReference, TMetadata]) ComputeConfiguredAspectValue(ctx c
 		targetLabel.AsResolved(),
 		model_starlark.NewConfiguredTargetReference[TReference, TMetadata](
 			targetLabel,
-			model_core.Nested(targetProviders, targetProviders.Message.ProviderInstances),
+			targetProviderInstances,
 			c.newTargetActionsResolver(ctx, e, targetLabel, configurationReference),
 		),
 	)

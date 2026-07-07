@@ -732,6 +732,11 @@ func (rd *starlarkRuleDefinition[TReference, TMetadata]) Encode(path map[starlar
 		return model_core.PatchedMessage[*model_starlark_pb.Rule_Definition, TMetadata]{}, false, fmt.Errorf("failed to encode rule configuration transition: %w", err)
 	}
 
+	provides, err := providerIdentifierStrings[TReference, TMetadata](rd.provides)
+	if err != nil {
+		return model_core.PatchedMessage[*model_starlark_pb.Rule_Definition, TMetadata]{}, false, fmt.Errorf("provides: %w", err)
+	}
+
 	subruleIdentifiers := make([]string, 0, len(rd.subrules))
 	for i, subrule := range rd.subrules {
 		if subrule.Identifier == nil {
@@ -749,6 +754,7 @@ func (rd *starlarkRuleDefinition[TReference, TMetadata]) Encode(path map[starlar
 			ExecGroups:         execGroups,
 			Implementation:     implementation.Merge(patcher),
 			Initializer:        initializerMessage,
+			Provides:           provides,
 			Test:               rd.test,
 			SubruleIdentifiers: slices.Compact(subruleIdentifiers),
 		},

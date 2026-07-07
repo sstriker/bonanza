@@ -455,10 +455,16 @@ func GetBuiltins[TReference object.BasicReference, TMetadata model_core.Referenc
 				); err != nil {
 					return nil, err
 				}
-				// TODO: attrs, requires, required_providers,
-				// required_aspect_providers, provides and
-				// toolchains are currently parsed, but ignored.
-				return NewAspect[TReference, TMetadata](nil, NewStarlarkAspectDefinition(attrAspects, implementation)), nil
+				// TODO: attrs and toolchains are currently
+				// parsed, but ignored.
+				return NewAspect[TReference, TMetadata](nil, NewStarlarkAspectDefinition(
+					attrAspects,
+					implementation,
+					requiredProviders,
+					requiredAspectProviders,
+					requires,
+					provides,
+				)), nil
 			},
 		),
 		"attr": NewStructFromDict[TReference, TMetadata](nil, map[string]any{

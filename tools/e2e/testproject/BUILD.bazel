@@ -1,5 +1,14 @@
 load("@bazel_skylib//rules:common_settings.bzl", "string_flag")
-load(":aspects.bzl", "aspect_reader", "node")
+load(
+    ":aspects.bzl",
+    "aspect_reader",
+    "composed_reader",
+    "dict_node",
+    "dict_reader",
+    "marked_node",
+    "marked_reader",
+    "node",
+)
 load(":defs.bzl", "repo_info", "setting_reader", "verify_native_apis")
 
 string_flag(
@@ -56,6 +65,69 @@ aspect_reader(
     deps = [":top"],
 )
 
+# collector_aspect must also propagate across the values of the
+# "tools" attr, which is an attr.string_keyed_label_dict().
+dict_node(
+    name = "dict_top",
+    tools = {"a": ":mid_a"},
+)
+
+aspect_reader(
+    name = "dict_node_labels",
+    deps = [":dict_top"],
+)
+
+# The dict_reader rule attaches collector_aspect to the values of its
+# string_keyed_label_dict attribute and exposes them as a
+# {string: Target} dict through ctx.attr.
+dict_reader(
+    name = "dict_labels",
+    tools = {
+        "first": ":mid_a",
+        "second": ":leaf",
+    },
+)
+
+# marked_collector_aspect has required_providers = [MarkerInfo], so it
+# must only be applied to marked_node() targets and must not propagate
+# through :plain_mid. :marked_leaf must therefore not be collected,
+# without :plain_mid causing an analysis error.
+marked_node(name = "marked_leaf")
+
+node(
+    name = "plain_mid",
+    deps = [":marked_leaf"],
+)
+
+marked_node(name = "marked_inner")
+
+marked_node(
+    name = "marked_mid",
+    deps = [":marked_inner"],
+)
+
+marked_node(
+    name = "marked_top",
+    deps = [
+        ":marked_mid",
+        ":plain_mid",
+    ],
+)
+
+marked_reader(
+    name = "marked_labels",
+    deps = [":marked_top"],
+)
+
+# c_aspect requires b_aspect, which in turn requires a_aspect. The
+# composed output proves that required aspects are applied to the same
+# targets first and that their providers are visible on both the target
+# argument and the target's dependencies.
+composed_reader(
+    name = "composed_aspects",
+    deps = [":mid_a"],
+)
+
 # Verifies, on the worker, that the artifacts produced by the targets
 # above have the expected contents. If any assertion fails, the build
 # fails.
@@ -70,12 +142,22 @@ genrule(
     name = "verify",
     srcs = [
         ":aspect_labels",
+        ":composed_aspects",
+        ":dict_labels",
+        ":dict_node_labels",
         ":hello",
+        ":marked_labels",
         ":repo_info",
         ":transitioned_mode",
     ],
     outs = ["verify.txt"],
     cmd = "grep -q 'top: \\[@@testproject+//:leaf, @@testproject+//:mid_a, @@testproject+//:mid_b, @@testproject+//:top\\]' $(location :aspect_labels) && " +
+          "grep -qF 'C(A(@@testproject+//:mid_a) | A(@@testproject+//:mid_a) deps=[A(@@testproject+//:leaf)])' $(location :composed_aspects) && " +
+          "grep -qF 'first -> @@testproject+//:mid_a: [@@testproject+//:leaf, @@testproject+//:mid_a]' $(location :dict_labels) && " +
+          "grep -qF 'second -> @@testproject+//:leaf: [@@testproject+//:leaf]' $(location :dict_labels) && " +
+          "grep -qF 'dict_top: [@@testproject+//:leaf, @@testproject+//:mid_a, @@testproject+//:dict_top]' $(location :dict_node_labels) && " +
+          "grep -qF 'marked_top: [@@testproject+//:marked_inner, @@testproject+//:marked_mid, @@testproject+//:marked_top]' $(location :marked_labels) && " +
+          "! grep -q 'marked_leaf' $(location :marked_labels) && " +
           "grep -q 'Hello from patched bonanza' $(location :hello) && " +
           "grep -q 'module=testproject' $(location :repo_info) && " +
           "grep -q 'version=None' $(location :repo_info) && " +
@@ -93,7 +175,11 @@ filegroup(
     name = "all",
     srcs = [
         ":aspect_labels",
+        ":composed_aspects",
+        ":dict_labels",
+        ":dict_node_labels",
         ":hello",
+        ":marked_labels",
         ":repo_info",
         ":transitioned_mode",
         ":verify",
