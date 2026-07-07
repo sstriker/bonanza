@@ -2291,4 +2291,127 @@ func TestFileRoot(t *testing.T) {
 			})
 		})
 	})
+
+	t.Run("SymlinkTargetPath", func(t *testing.T) {
+		t.Run("Success", func(t *testing.T) {
+			// Simulate the computation of the output of:
+			//
+			//     output = ctx.actions.declare_symlink("passwd")
+			//     ctx.actions.symlink(
+			//         output = output,
+			//         target_path = "/etc/passwd",
+			//     )
+			//
+			// The target path is stored verbatim in the
+			// output definition, meaning that the symlink
+			// still needs to be placed in a directory
+			// hierarchy rooted at the output directory of
+			// the package and configuration.
+			run := func(t *testing.T, directoryLayout model_analysis_pb.DirectoryLayout) model_analysis.PatchedFileRootValue[model_core.CreatedObjectTree] {
+				e := NewMockFileRootEnvironmentForTesting(ctrl)
+				bct.expectCaptureExistingObject(e)
+				bct.expectGetDirectoryCreationParametersObjectValue(t, e)
+				e.EXPECT().GetTargetOutputValue(
+					eqPatchedMessage(func(patcher *model_core.ReferenceMessagePatcher[model_core.CreatedObjectTree]) *model_analysis_pb.TargetOutput_Key {
+						return &model_analysis_pb.TargetOutput_Key{
+							Label:                  "@@myrepo+//:create_symlink",
+							ConfigurationReference: attachObject(patcher, exampleConfiguration),
+							PackageRelativePath:    "passwd",
+						}
+					}),
+				).Return(newMessage(func(patcher *model_core.ReferenceMessagePatcher[model_core.CreatedObjectTree]) *model_analysis_pb.TargetOutput_Value {
+					return &model_analysis_pb.TargetOutput_Value{
+						Definition: &model_analysis_pb.TargetOutputDefinition{
+							FileType: model_starlark_pb.File_Owner_SYMLINK,
+							Source: &model_analysis_pb.TargetOutputDefinition_SymlinkTargetPath_{
+								SymlinkTargetPath: &model_analysis_pb.TargetOutputDefinition_SymlinkTargetPath{
+									TargetPath: "/etc/passwd",
+								},
+							},
+						},
+					}
+				}))
+
+				fileRoot, err := bct.computer.ComputeFileRootValue(
+					ctx,
+					newMessage(func(patcher *model_core.ReferenceMessagePatcher[model_core.CreatedObjectTree]) *model_analysis_pb.FileRoot_Key {
+						return &model_analysis_pb.FileRoot_Key{
+							DirectoryLayout: directoryLayout,
+							File: &model_starlark_pb.File{
+								Label: "@@myrepo+//:passwd",
+								Owner: &model_starlark_pb.File_Owner{
+									ConfigurationReference: attachObject(patcher, exampleConfiguration),
+									TargetName:             "create_symlink",
+									Type:                   model_starlark_pb.File_Owner_SYMLINK,
+								},
+							},
+						}
+					}),
+					e,
+				)
+				require.NoError(t, err)
+				return fileRoot
+			}
+
+			t.Run("InputRoot", func(t *testing.T) {
+				fileRoot := run(t, model_analysis_pb.DirectoryLayout_INPUT_ROOT)
+				requireEqualPatchedMessage(t, func(patcher *model_core.ReferenceMessagePatcher[model_core.CreatedObjectTree]) *model_analysis_pb.FileRoot_Value {
+					return &model_analysis_pb.FileRoot_Value{
+						RootDirectory: singleChildDirectoryContents(
+							"bazel-out",
+							singleChildDirectoryContents(
+								"Cg6Kx80o8BPYmGdgWYfRZvbKyWojQ7snQzHOx70XAwRPAAAAAAAAAA.",
+								singleChildDirectoryContents(
+									"bin",
+									singleChildDirectoryContents(
+										"external",
+										singleChildDirectoryContents(
+											"myrepo+",
+											&model_filesystem_pb.DirectoryContents{
+												Leaves: &model_filesystem_pb.DirectoryContents_LeavesInline{
+													LeavesInline: &model_filesystem_pb.Leaves{
+														Symlinks: []*model_filesystem_pb.SymlinkNode{
+															{
+																Name:   "passwd",
+																Target: "/etc/passwd",
+															},
+														},
+													},
+												},
+											},
+										),
+									),
+								),
+							),
+						),
+					}
+				}, fileRoot)
+				fileRoot.Discard()
+			})
+
+			t.Run("Runfiles", func(t *testing.T) {
+				fileRoot := run(t, model_analysis_pb.DirectoryLayout_RUNFILES)
+				requireEqualPatchedMessage(t, func(patcher *model_core.ReferenceMessagePatcher[model_core.CreatedObjectTree]) *model_analysis_pb.FileRoot_Value {
+					return &model_analysis_pb.FileRoot_Value{
+						RootDirectory: singleChildDirectoryContents(
+							"myrepo+",
+							&model_filesystem_pb.DirectoryContents{
+								Leaves: &model_filesystem_pb.DirectoryContents_LeavesInline{
+									LeavesInline: &model_filesystem_pb.Leaves{
+										Symlinks: []*model_filesystem_pb.SymlinkNode{
+											{
+												Name:   "passwd",
+												Target: "/etc/passwd",
+											},
+										},
+									},
+								},
+							},
+						),
+					}
+				}, fileRoot)
+				fileRoot.Discard()
+			})
+		})
+	})
 }

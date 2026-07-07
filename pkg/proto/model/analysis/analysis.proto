@@ -644,6 +644,18 @@ message TargetOutputDefinition {
     bool is_executable = 2;
   }
 
+  message SymlinkTargetPath {
+    // The target of the symlink, stored verbatim as it was provided
+    // to ctx.actions.symlink(target_path=...).
+    string target_path = 1;
+  }
+
+  // The type of the output, as declared through
+  // ctx.actions.declare_file(), declare_directory() or
+  // declare_symlink(). This only affects properties like
+  // File.is_directory and is_symlink, not the paths.
+  bonanza.model.starlark.File.Owner.Type file_type = 1;
+
   oneof source {
     // Output of a command that was declared using
     // ctx.actions.run() or ctx.actions.run_shell(). The
@@ -654,11 +666,14 @@ message TargetOutputDefinition {
     // ctx.actions.expand_template().
     ExpandTemplate expand_template = 3;
 
-    // Output of ctx.actions.symlink(target_path=...) or
-    // ctx.actions.write(content=<str>), provided in the form of a
-    // directory hierarchy containing the file or symlink in question,
+    // Output of ctx.actions.write(content=<str>), provided in the
+    // form of a directory hierarchy containing the file in question,
     // rooted at the output directory of the current package and
     // configuration.
+    //
+    // Values that were computed before symlink_target_path was
+    // introduced may also use this to store the output of
+    // ctx.actions.symlink(target_path=...).
     bonanza.model.filesystem.DirectoryContents static_package_directory = 4;
 
     // Output of ctx.actions.symlink(target_file=...).
@@ -666,6 +681,9 @@ message TargetOutputDefinition {
 
     // Output of ctx.actions.write(content=<Args>).
     Write write = 6;
+
+    // Output of ctx.actions.symlink(target_path=...).
+    SymlinkTargetPath symlink_target_path = 7;
   }
 }
 

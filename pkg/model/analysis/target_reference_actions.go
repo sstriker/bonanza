@@ -107,12 +107,7 @@ func (c *baseComputer[TReference, TMetadata]) computeTargetActions(
 				Owner: &model_starlark_pb.File_Owner{
 					ConfigurationReference: configurationReference.Message,
 					TargetName:             targetNameStr,
-					// TODO: The configured target value does
-					// not record whether the output was
-					// declared as a directory or symlink.
-					// This only affects File.is_directory
-					// and similar properties, not the paths.
-					Type: model_starlark_pb.File_Owner_FILE,
+					Type:                   leaf.Definition.GetFileType(),
 				},
 				Label: targetPackage.AppendTargetName(packageRelativePath).String(),
 			}),
@@ -133,18 +128,30 @@ func (c *baseComputer[TReference, TMetadata]) computeTargetActions(
 				return nil, err
 			}
 			synthesizedActions = append(synthesizedActions, action)
-		case *model_analysis_pb.TargetOutputDefinition_StaticPackageDirectory, *model_analysis_pb.TargetOutputDefinition_Write_:
-			// Note that ctx.actions.symlink(target_path=...)
-			// is also stored as a static package directory,
-			// meaning it cannot be distinguished from
-			// ctx.actions.write() without reading the
-			// directory's contents.
+		case *model_analysis_pb.TargetOutputDefinition_StaticPackageDirectory:
+			// Static package directories are only created
+			// by ctx.actions.write(). Configured target
+			// values that were computed before the
+			// introduction of symlink_target_path may also
+			// use them for ctx.actions.symlink(
+			// target_path=...), which can be told apart by
+			// the type of the output.
+			mnemonic := "FileWrite"
+			if leaf.Definition.GetFileType() == model_starlark_pb.File_Owner_SYMLINK {
+				mnemonic = "Symlink"
+			}
+			action, err := newSynthesizedTargetAction[TReference, TMetadata](thread, identifierGenerator, mnemonic, f, starlark.None)
+			if err != nil {
+				return nil, err
+			}
+			synthesizedActions = append(synthesizedActions, action)
+		case *model_analysis_pb.TargetOutputDefinition_Write_:
 			action, err := newSynthesizedTargetAction[TReference, TMetadata](thread, identifierGenerator, "FileWrite", f, starlark.None)
 			if err != nil {
 				return nil, err
 			}
 			synthesizedActions = append(synthesizedActions, action)
-		case *model_analysis_pb.TargetOutputDefinition_Symlink_:
+		case *model_analysis_pb.TargetOutputDefinition_Symlink_, *model_analysis_pb.TargetOutputDefinition_SymlinkTargetPath_:
 			action, err := newSynthesizedTargetAction[TReference, TMetadata](thread, identifierGenerator, "Symlink", f, starlark.None)
 			if err != nil {
 				return nil, err

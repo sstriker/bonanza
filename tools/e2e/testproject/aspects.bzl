@@ -12,9 +12,12 @@ required_providers against providers advertised through
 rule(provides = ...), aspect composition through requires and
 required_aspect_providers, materialization of an aspect's own
 attrs (a configured private label attr and a string parameter)
-through ctx.attr, and resolution of aspect(toolchains = ...) into
+through ctx.attr, resolution of aspect(toolchains = ...) into
 ctx.toolchains (both a registered mandatory toolchain and an
-optional toolchain type without a registered implementation).
+optional toolchain type without a registered implementation), and
+observation of a target's registered actions through target.actions
+(mnemonics of synthesized actions and the declared types of their
+output Files).
 """
 
 load("@bazel_skylib//lib:partial.bzl", "partial")
@@ -323,5 +326,83 @@ toolchain_probe_reader = rule(
     implementation = _toolchain_probe_reader_impl,
     attrs = {
         "deps": attr.label_list(aspects = [toolchain_probe_aspect]),
+    },
+)
+
+ActionEdgesInfo = provider(
+    doc = "Computed by action_edges_aspect from target.actions.",
+    fields = ["lines"],
+)
+
+# A rule that registers one output of each flavor that is not backed
+# by a command: ctx.actions.write(), both flavors of
+# ctx.actions.symlink(), and a directory output produced by
+# ctx.actions.run(), so that action_edges_aspect can observe the
+# synthesized Action structs.
+def _action_edges_node_impl(ctx):
+    out_write = ctx.actions.declare_file(ctx.label.name + ".write.txt")
+    ctx.actions.write(out_write, "hello\n")
+
+    out_dir = ctx.actions.declare_directory(ctx.label.name + ".dir")
+    ctx.actions.run(
+        executable = "/bin/mkdir",
+        arguments = ["-p", out_dir.path],
+        outputs = [out_dir],
+        mnemonic = "MakeDirectory",
+    )
+
+    out_symlink = ctx.actions.declare_symlink(ctx.label.name + ".sym")
+    ctx.actions.symlink(
+        output = out_symlink,
+        target_path = "../some/target",
+    )
+
+    out_symlink_file = ctx.actions.declare_file(ctx.label.name + ".symfile")
+    ctx.actions.symlink(
+        output = out_symlink_file,
+        target_file = out_write,
+    )
+
+    return [DefaultInfo(files = depset([out_write]))]
+
+action_edges_node = rule(
+    implementation = _action_edges_node_impl,
+)
+
+# The Action structs observed through target.actions must carry
+# mnemonics matching the API through which they were registered
+# (FileWrite for write(), Symlink for both flavors of symlink()), and
+# their output Files must report is_directory/is_symlink as declared.
+def _action_edges_aspect_impl(target, ctx):
+    lines = []
+    for a in target.actions:
+        outs = []
+        for f in a.outputs.to_list():
+            mark = "F"
+            if f.is_directory:
+                mark = "D"
+            elif f.is_symlink:
+                mark = "L"
+            outs.append("{}[{}]".format(f.basename, mark))
+        lines.append("{} -> {}".format(a.mnemonic, ", ".join(sorted(outs))))
+    return [ActionEdgesInfo(lines = sorted(lines))]
+
+action_edges_aspect = aspect(
+    implementation = _action_edges_aspect_impl,
+    provides = [ActionEdgesInfo],
+)
+
+def _action_edges_reader_impl(ctx):
+    lines = []
+    for dep in ctx.attr.deps:
+        lines += dep[ActionEdgesInfo].lines
+    out = ctx.actions.declare_file(ctx.label.name + ".txt")
+    ctx.actions.write(out, "\n".join(lines) + "\n")
+    return [DefaultInfo(files = depset([out]))]
+
+action_edges_reader = rule(
+    implementation = _action_edges_reader_impl,
+    attrs = {
+        "deps": attr.label_list(aspects = [action_edges_aspect]),
     },
 )

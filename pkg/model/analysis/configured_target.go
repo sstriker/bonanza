@@ -1906,6 +1906,10 @@ func (o *targetOutput[TMetadata]) setDefinition(definition model_core.PatchedMes
 	if o.definition.IsSet() {
 		return fmt.Errorf("file %#v is an output of multiple actions", o.packageRelativePath.String())
 	}
+	// Record the type with which the output was declared, so that
+	// consumers of the definition can reconstruct File objects
+	// having the correct values of File.is_directory and is_symlink.
+	definition.Message.FileType = o.fileType
 	o.definition = definition
 	return nil
 }
@@ -3169,7 +3173,7 @@ func (singleSymlinkDirectory[TFile, TDirectory]) OpenForFileMerkleTreeCreation(n
 func (rca *ruleContextActions[TReference, TMetadata]) doSymlink(thread *starlark.Thread, b *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
 	var output *targetOutput[TMetadata]
 	var targetFile *model_starlark.File[TReference, TMetadata]
-	var targetPath path.Parser
+	targetPath := ""
 	isExecutable := false
 	progressMessage := ""
 	useExecRootForSource := false
@@ -3178,7 +3182,7 @@ func (rca *ruleContextActions[TReference, TMetadata]) doSymlink(thread *starlark
 		b.Name(), args, kwargs,
 		"output", unpack.Bind(thread, &output, rc.outputRegistrar),
 		"target_file?", unpack.Bind(thread, &targetFile, unpack.IfNotNone(unpack.Type[*model_starlark.File[TReference, TMetadata]]("File"))),
-		"target_path?", unpack.Bind(thread, &targetPath, unpack.PathParser(path.UNIXFormat)),
+		"target_path?", unpack.Bind(thread, &targetPath, unpack.String),
 		"is_executable?", unpack.Bind(thread, &isExecutable, unpack.Bool),
 		"progress_message?", unpack.Bind(thread, &progressMessage, unpack.IfNotNone(unpack.String)),
 		"use_exec_root_for_source?", unpack.Bind(thread, &useExecRootForSource, unpack.Bool),
@@ -3194,7 +3198,7 @@ func (rca *ruleContextActions[TReference, TMetadata]) doSymlink(thread *starlark
 	}
 
 	if targetFile != nil {
-		if targetPath != nil {
+		if targetPath != "" {
 			return nil, errors.New("target_file and target_path cannot be specified at the same time")
 		}
 		if output.fileType != model_starlark_pb.File_Owner_DIRECTORY && output.fileType != model_starlark_pb.File_Owner_FILE {
@@ -3221,19 +3225,32 @@ func (rca *ruleContextActions[TReference, TMetadata]) doSymlink(thread *starlark
 		)
 	}
 
-	if targetPath == nil {
+	if targetPath == "" {
 		return nil, errors.New("one of target_file or target_path needs to be specified")
 	}
 	if output.fileType != model_starlark_pb.File_Owner_SYMLINK {
 		return nil, errors.New("target_path can only be used in combination with outputs that are declared as symbolic links")
 	}
 
-	return starlark.None, rc.setOutputToStaticDirectory(
-		output,
-		&singleSymlinkDirectory[TMetadata, TMetadata]{
-			components: output.packageRelativePath.ToComponents(),
-			target:     targetPath,
-		},
+	// The target path is stored verbatim and only converted to a
+	// symbolic link when a file root for the output is computed.
+	// Still parse it here, so that malformed paths are reported
+	// during analysis.
+	_, scopeWalker := path.EmptyBuilder.Join(path.VoidScopeWalker)
+	if err := path.Resolve(path.UNIXFormat.NewParser(targetPath), scopeWalker); err != nil {
+		return nil, fmt.Errorf("invalid target path %#v: %w", targetPath, err)
+	}
+
+	return starlark.None, output.setDefinition(
+		model_core.NewSimplePatchedMessage[TMetadata](
+			&model_analysis_pb.TargetOutputDefinition{
+				Source: &model_analysis_pb.TargetOutputDefinition_SymlinkTargetPath_{
+					SymlinkTargetPath: &model_analysis_pb.TargetOutputDefinition_SymlinkTargetPath{
+						TargetPath: targetPath,
+					},
+				},
+			},
+		),
 	)
 }
 

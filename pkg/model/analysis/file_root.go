@@ -920,6 +920,49 @@ func (baseComputer[TReference, TMetadata]) ComputeFileRootValue(ctx context.Cont
 				directoryCreationParameters,
 				&rootDirectory,
 			)
+		case *model_analysis_pb.TargetOutputDefinition_SymlinkTargetPath_:
+			// Symlink that was created by calling
+			// ctx.actions.symlink(target_path=...). The
+			// target path is stored verbatim. Create a
+			// directory hierarchy containing the symlink,
+			// rooted at the output directory of the current
+			// package and configuration.
+			directoryCreationParameters, gotDirectoryCreationParameters := e.GetDirectoryCreationParametersObjectValue(&model_analysis_pb.DirectoryCreationParametersObject_Key{})
+			if !gotDirectoryCreationParameters {
+				return PatchedFileRootValue[TMetadata]{}, evaluation.ErrMissingDependency
+			}
+
+			components, err := getPackageOutputDirectoryComponents(configurationReference, fileLabel.GetCanonicalPackage(), key.Message.DirectoryLayout)
+			if err != nil {
+				return PatchedFileRootValue[TMetadata]{}, err
+			}
+
+			var createdDirectory model_filesystem.CreatedDirectory[TMetadata]
+			group, groupCtx := errgroup.WithContext(ctx)
+			group.Go(func() error {
+				return model_filesystem.CreateDirectoryMerkleTree(
+					groupCtx,
+					semaphore.NewWeighted(1),
+					group,
+					directoryCreationParameters,
+					&singleSymlinkDirectory[TMetadata, TMetadata]{
+						components: append(components, fileLabel.GetTargetName().ToComponents()...),
+						target:     path.UNIXFormat.NewParser(source.SymlinkTargetPath.TargetPath),
+					},
+					model_filesystem.NewSimpleDirectoryMerkleTreeCapturer(e),
+					&createdDirectory,
+				)
+			})
+			if err := group.Wait(); err != nil {
+				return PatchedFileRootValue[TMetadata]{}, err
+			}
+
+			return model_core.NewPatchedMessage(
+				&model_analysis_pb.FileRoot_Value{
+					RootDirectory: createdDirectory.Message.Message,
+				},
+				createdDirectory.Message.Patcher,
+			), nil
 		default:
 			return PatchedFileRootValue[TMetadata]{}, errors.New("unknown output source type")
 		}

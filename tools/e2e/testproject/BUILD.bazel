@@ -1,6 +1,8 @@
 load("@bazel_skylib//rules:common_settings.bzl", "string_flag")
 load(
     ":aspects.bzl",
+    "action_edges_node",
+    "action_edges_reader",
     "aspect_reader",
     "composed_reader",
     "dict_node",
@@ -187,6 +189,18 @@ toolchain_probe_reader(
     deps = [":leaf"],
 )
 
+# action_edges_aspect observes the actions registered by
+# action_edges_node through target.actions. The report must show the
+# FileWrite mnemonic for write(), the Symlink mnemonic for both
+# flavors of symlink(), and output Files whose is_directory and
+# is_symlink properties match the declaration.
+action_edges_node(name = "action_edges_node")
+
+action_edges_reader(
+    name = "action_edges",
+    deps = [":action_edges_node"],
+)
+
 # Verifies, on the worker, that the artifacts produced by the targets
 # above have the expected contents. If any assertion fails, the build
 # fails.
@@ -200,6 +214,7 @@ genrule(
 genrule(
     name = "verify",
     srcs = [
+        ":action_edges",
         ":aspect_labels",
         ":aspect_transitioned",
         ":attr_transitioned",
@@ -223,6 +238,10 @@ genrule(
           "grep -qF 'marked_top: [@@testproject+//:marked_inner, @@testproject+//:marked_mid, @@testproject+//:marked_top]' $(location :marked_labels) && " +
           "! grep -q 'marked_leaf' $(location :marked_labels) && " +
           "grep -qF 'resolved=probe-value optional=True' $(location :toolchain_probe) && " +
+          "grep -qF 'FileWrite -> action_edges_node.write.txt[F]' $(location :action_edges) && " +
+          "grep -qF 'MakeDirectory -> action_edges_node.dir[D]' $(location :action_edges) && " +
+          "grep -qF 'Symlink -> action_edges_node.sym[L]' $(location :action_edges) && " +
+          "grep -qF 'Symlink -> action_edges_node.symfile[F]' $(location :action_edges) && " +
           "grep -q 'Hello from patched bonanza' $(location :hello) && " +
           "grep -q 'module=testproject' $(location :repo_info) && " +
           "grep -q 'version=None' $(location :repo_info) && " +
@@ -242,6 +261,7 @@ genrule(
 filegroup(
     name = "all",
     srcs = [
+        ":action_edges",
         ":aspect_labels",
         ":aspect_transitioned",
         ":attr_transitioned",
