@@ -307,6 +307,9 @@ func (c *baseComputer[TReference, TMetadata]) ComputeConfiguredAspectValue(ctx c
 	if _, ok := requiresClosure[aspectIdentifier.String()]; ok {
 		return PatchedConfiguredAspectValue[TMetadata]{}, fmt.Errorf("aspect %#v requires itself", aspectIdentifier.String())
 	}
+	if len(aspectDefinition.Message.RequiredAspectProviders) > 0 && len(aspectDefinition.Message.Requires) == 0 {
+		return PatchedConfiguredAspectValue[TMetadata]{}, fmt.Errorf("aspect %#v specifies required_aspect_providers without requires, which is not supported: only providers of aspects in the requires closure can be made visible", aspectIdentifier.String())
+	}
 
 	// Determine which of the required aspects' providers should be
 	// visible to this aspect: those of aspects that are required
@@ -390,7 +393,29 @@ func (c *baseComputer[TReference, TMetadata]) ComputeConfiguredAspectValue(ctx c
 	// group, which carries no execution constraints, as aspect()
 	// takes no exec_compatible_with.
 	var aspectExecGroup ruleContextExecGroupState
-	if aspectToolchains := aspectDefinition.Message.Toolchains; len(aspectToolchains) > 0 {
+	aspectExecGroupPlatformLabels := map[string]string{}
+	aspectToolchains := aspectDefinition.Message.Toolchains
+	aspectNeedsExecutionPlatform := len(aspectToolchains) > 0
+	if !aspectNeedsExecutionPlatform {
+		for _, namedAttr := range aspectDefinition.Message.Attrs {
+			var labelOptions *model_starlark_pb.Attr_LabelOptions
+			switch attrType := namedAttr.Attr.GetType().(type) {
+			case *model_starlark_pb.Attr_Label:
+				labelOptions = attrType.Label.ValueOptions
+			case *model_starlark_pb.Attr_LabelKeyedStringDict:
+				labelOptions = attrType.LabelKeyedStringDict.DictKeyOptions
+			case *model_starlark_pb.Attr_LabelList:
+				labelOptions = attrType.LabelList.ListValueOptions
+			case *model_starlark_pb.Attr_StringKeyedLabelDict:
+				labelOptions = attrType.StringKeyedLabelDict.DictValueOptions
+			}
+			if _, ok := labelOptions.GetCfg().GetKind().(*model_starlark_pb.Transition_ExecGroup); ok {
+				aspectNeedsExecutionPlatform = true
+				break
+			}
+		}
+	}
+	if aspectNeedsExecutionPlatform {
 		patchedConfigurationReference := model_core.Patch(e, configurationReference)
 		resolvedToolchains := e.GetResolvedToolchainsValue(
 			model_core.NewPatchedMessage(
@@ -413,6 +438,7 @@ func (c *baseComputer[TReference, TMetadata]) ComputeConfiguredAspectValue(ctx c
 				toolchainIdentifiers:  toolchainIdentifiers,
 				toolchainInfos:        make([]starlark.Value, len(toolchainIdentifiers)),
 			}
+			aspectExecGroupPlatformLabels[""] = resolvedToolchains.Message.PlatformLabel
 		}
 	}
 
@@ -513,6 +539,33 @@ GetNonLabelAttrValues:
 				continue
 			}
 			return PatchedConfiguredAspectValue[TMetadata]{}, fmt.Errorf("attr %#v: %w", namedAttr.Name, err)
+		}
+
+		switch namedAttr.Attr.GetType().(type) {
+		case *model_starlark_pb.Attr_Output, *model_starlark_pb.Attr_OutputList:
+			// Labels contained in output attrs are decoded
+			// as plain label values, just like during
+			// target configuration.
+			var attrValue starlark.Value
+			for _, valuePart := range valueParts.Message {
+				decodedPart, err := model_starlark.DecodeValue[TReference, TMetadata](
+					model_core.Nested(valueParts, valuePart),
+					/* currentIdentifier = */ nil,
+					c.getValueDecodingOptions(ctx, func(resolvedLabel label.ResolvedLabel) (starlark.Value, error) {
+						return model_starlark.NewLabel[TReference, TMetadata](resolvedLabel), nil
+					}),
+				)
+				if err != nil {
+					return PatchedConfiguredAspectValue[TMetadata]{}, fmt.Errorf("attr %#v: %w", namedAttr.Name, err)
+				}
+				if err := concatenateAttrValueParts(thread, &attrValue, decodedPart); err != nil {
+					return PatchedConfiguredAspectValue[TMetadata]{}, fmt.Errorf("attr %#v: %w", namedAttr.Name, err)
+				}
+			}
+			attrValue.Freeze()
+			attrValues[namedAttr.Name] = attrValue
+			edgeTransitionAttrValues[namedAttr.Name] = attrValue
+			continue GetNonLabelAttrValues
 		}
 
 		// Whether an explicit value or a default attr value is
@@ -644,7 +697,7 @@ GetNonLabelAttrValues:
 			configurationReference,
 			edgeTransitionAttrValuesStruct,
 			/* visibilityFromPackage = */ aspectPackage,
-			execGroupPlatformLabels,
+			aspectExecGroupPlatformLabels,
 			/* extraAspectIdentifiers = */ nil,
 		)
 		if err != nil {
