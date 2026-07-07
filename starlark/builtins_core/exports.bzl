@@ -225,6 +225,31 @@ config_setting = rule(
     provides = [ConfigSettingInfo],
 )
 
+def _config_feature_flag_impl(ctx):
+    # config_feature_flag declares a string valued flag whose value can
+    # be overridden per configuration (e.g. through android_binary's
+    # feature_flags attribute).
+    #
+    # TODO: Bonanza does not model the feature flag configuration, so the
+    # flag always resolves to its default value. This is enough to load
+    # and analyze packages that merely declare feature flags (such as
+    # rules_android's generated SDK repository), but it does not honor
+    # per-configuration overrides. Model the feature flag configuration
+    # once a rule set actually relies on overriding these values.
+    value = ctx.attr.default_value
+    if ctx.attr.allowed_values and value not in ctx.attr.allowed_values:
+        fail("default_value %r is not one of the allowed_values %r" % (value, ctx.attr.allowed_values))
+    return [FeatureFlagInfo(value = value)]
+
+config_feature_flag = rule(
+    implementation = _config_feature_flag_impl,
+    attrs = {
+        "allowed_values": attr.string_list(),
+        "default_value": attr.string(),
+    },
+    provides = [FeatureFlagInfo],
+)
+
 def configuration_field(fragment, name):
     # Don't provide actual support for late-bound defaults. Instead map
     # each of them to the respective command line option used by Bazel.
@@ -1601,6 +1626,7 @@ exported_rules = {
     "alias": native.alias,
     "cc_libc_top_alias": cc_libc_top_alias,
     "cc_toolchain_suite": cc_toolchain_suite,
+    "config_feature_flag": config_feature_flag,
     "config_setting": config_setting,
     "constraint_setting": constraint_setting,
     "constraint_value": constraint_value,
