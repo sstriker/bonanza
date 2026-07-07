@@ -114,6 +114,7 @@ type AspectDefinition[TReference any, TMetadata model_core.ReferenceMetadata] in
 
 type starlarkAspectDefinition[TReference object.BasicReference, TMetadata model_core.ReferenceMetadata] struct {
 	attrAspects             []string
+	attrs                   map[pg_label.StarlarkIdentifier]*Attr[TReference, TMetadata]
 	implementation          NamedFunction[TReference, TMetadata]
 	requiredProviders       [][]*Provider[TReference, TMetadata]
 	requiredAspectProviders [][]*Provider[TReference, TMetadata]
@@ -125,6 +126,7 @@ type starlarkAspectDefinition[TReference object.BasicReference, TMetadata model_
 // given the parameters that were provided to the aspect() function.
 func NewStarlarkAspectDefinition[TReference object.BasicReference, TMetadata model_core.ReferenceMetadata](
 	attrAspects []string,
+	attrs map[pg_label.StarlarkIdentifier]*Attr[TReference, TMetadata],
 	implementation NamedFunction[TReference, TMetadata],
 	requiredProviders [][]*Provider[TReference, TMetadata],
 	requiredAspectProviders [][]*Provider[TReference, TMetadata],
@@ -133,6 +135,7 @@ func NewStarlarkAspectDefinition[TReference object.BasicReference, TMetadata mod
 ) AspectDefinition[TReference, TMetadata] {
 	return &starlarkAspectDefinition[TReference, TMetadata]{
 		attrAspects:             attrAspects,
+		attrs:                   attrs,
 		implementation:          implementation,
 		requiredProviders:       requiredProviders,
 		requiredAspectProviders: requiredAspectProviders,
@@ -149,6 +152,12 @@ func (ad *starlarkAspectDefinition[TReference, TMetadata]) Encode(path map[starl
 
 	attrAspects := slices.Clone(ad.attrAspects)
 	sort.Strings(attrAspects)
+
+	namedAttrs, namedAttrsNeedCode, err := encodeNamedAttrs(ad.attrs, path, options)
+	if err != nil {
+		return model_core.PatchedMessage[*model_starlark_pb.Aspect_Definition, TMetadata]{}, false, err
+	}
+	needsCode = needsCode || namedAttrsNeedCode
 
 	requiredProviders, err := encodeRequiredProviderSets(ad.requiredProviders)
 	if err != nil {
@@ -167,16 +176,19 @@ func (ad *starlarkAspectDefinition[TReference, TMetadata]) Encode(path map[starl
 		return model_core.PatchedMessage[*model_starlark_pb.Aspect_Definition, TMetadata]{}, false, fmt.Errorf("provides: %w", err)
 	}
 
+	patcher := implementation.Patcher
+	patcher.Merge(namedAttrs.Patcher)
 	return model_core.NewPatchedMessage(
 		&model_starlark_pb.Aspect_Definition{
 			AttrAspects:             slices.Compact(attrAspects),
+			Attrs:                   namedAttrs.Message,
 			Implementation:          implementation.Message,
 			RequiredProviders:       requiredProviders,
 			RequiredAspectProviders: requiredAspectProviders,
 			Requires:                requires,
 			Provides:                provides,
 		},
-		implementation.Patcher,
+		patcher,
 	), needsCode, nil
 }
 

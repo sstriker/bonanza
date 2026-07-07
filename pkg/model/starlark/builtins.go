@@ -455,10 +455,35 @@ func GetBuiltins[TReference object.BasicReference, TMetadata model_core.Referenc
 				); err != nil {
 					return nil, err
 				}
-				// TODO: attrs and toolchains are currently
-				// parsed, but ignored.
+				// Aspect attrs are either private (in which
+				// case a default value must be present, as no
+				// explicit value can ever be provided), or
+				// parameters of type string carrying a "values"
+				// restriction. As per-application parameter
+				// values are not supported yet, parameters must
+				// also carry a default value.
+				for name, attr := range attrs {
+					if name.IsPublic() {
+						stringType, ok := attr.attrType.(*stringAttrType[TReference, TMetadata])
+						if !ok || len(stringType.values) == 0 {
+							return nil, fmt.Errorf("%s: aspect attribute %#v must be private (start with '_') or be of type string with a \"values\" restriction", b.Name(), name.String())
+						}
+						defaultValue, ok := attr.defaultValue.(starlark.String)
+						if !ok {
+							return nil, fmt.Errorf("%s: aspect attribute %#v must have a string default value", b.Name(), name.String())
+						}
+						if !slices.Contains(stringType.values, string(defaultValue)) {
+							return nil, fmt.Errorf("%s: default value of aspect attribute %#v must be one of its permitted values", b.Name(), name.String())
+						}
+					} else if attr.defaultValue == nil {
+						return nil, fmt.Errorf("%s: aspect attribute %#v is private and must therefore have a default value", b.Name(), name.String())
+					}
+				}
+				// TODO: toolchains are currently parsed, but
+				// ignored.
 				return NewAspect[TReference, TMetadata](nil, NewStarlarkAspectDefinition(
 					attrAspects,
+					attrs,
 					implementation,
 					requiredProviders,
 					requiredAspectProviders,

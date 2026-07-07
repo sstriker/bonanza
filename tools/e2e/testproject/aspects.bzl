@@ -9,8 +9,10 @@ deduplication/ordering.
 Additional rules and aspects assert propagation across
 attr.string_keyed_label_dict() attributes, filtering based on
 required_providers against providers advertised through
-rule(provides = ...), and aspect composition through requires and
-required_aspect_providers.
+rule(provides = ...), aspect composition through requires and
+required_aspect_providers, and materialization of an aspect's own
+attrs (a configured private label attr and a string parameter)
+through ctx.attr.
 """
 
 load("@bazel_skylib//lib:partial.bzl", "partial")
@@ -36,7 +38,7 @@ NodeInfo = provider(
 
 TransitiveInfo = provider(
     doc = "Computed by collector_aspect while walking deps.",
-    fields = ["labels"],
+    fields = ["labels", "attr_info"],
 )
 
 def _node_impl(ctx):
@@ -50,6 +52,18 @@ node = rule(
 )
 
 def _collector_aspect_impl(target, ctx):
+    # The aspect's own attrs are configured from their default values
+    # and exposed through ctx.attr, separate from the attrs of the
+    # visited rule target exposed through ctx.rule.attr. The private
+    # "_marker" label attr must have been configured into a Target
+    # carrying its providers, and its default label must have been
+    # resolved relative to the package declaring this aspect.
+    if NodeInfo not in ctx.attr._marker:
+        fail("ctx.attr._marker does not provide NodeInfo")
+    attr_info = "marker={} fmt={}".format(
+        ctx.attr._marker[NodeInfo].label_str,
+        ctx.attr.fmt,
+    )
     deps = list(getattr(ctx.rule.attr, "deps", []))
     deps += getattr(ctx.rule.attr, "tools", {}).values()
     transitive = [dep[TransitiveInfo].labels for dep in deps]
@@ -58,7 +72,7 @@ def _collector_aspect_impl(target, ctx):
         transitive = transitive,
         order = "postorder",
     )
-    return [TransitiveInfo(labels = labels)]
+    return [TransitiveInfo(labels = labels, attr_info = attr_info)]
 
 collector_aspect = aspect(
     implementation = _collector_aspect_impl,
@@ -66,13 +80,25 @@ collector_aspect = aspect(
         "deps",
         "tools",
     ],
+    attrs = {
+        "_marker": attr.label(
+            default = ":leaf",
+            providers = [NodeInfo],
+        ),
+        "fmt": attr.string(
+            default = "plain",
+            values = ["plain", "fancy"],
+        ),
+    },
 )
 
 def _aspect_reader_impl(ctx):
     lines = []
     for dep in ctx.attr.deps:
-        labels = dep[TransitiveInfo].labels.to_list()
+        info = dep[TransitiveInfo]
+        labels = info.labels.to_list()
         lines.append("{}: [{}]".format(str(dep.label), ", ".join(labels)))
+        lines.append("{} {}".format(str(dep.label), info.attr_info))
     out = ctx.actions.declare_file(ctx.label.name + ".txt")
     ctx.actions.write(out, "\n".join(lines) + "\n")
     return [DefaultInfo(files = depset([out]))]

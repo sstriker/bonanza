@@ -152,6 +152,7 @@ genrule(
     ],
     outs = ["verify.txt"],
     cmd = "grep -q 'top: \\[@@testproject+//:leaf, @@testproject+//:mid_a, @@testproject+//:mid_b, @@testproject+//:top\\]' $(location :aspect_labels) && " +
+          "grep -qF '@@testproject+//:top marker=@@testproject+//:leaf fmt=plain' $(location :aspect_labels) && " +
           "grep -qF 'C(A(@@testproject+//:mid_a) | A(@@testproject+//:mid_a) deps=[A(@@testproject+//:leaf)])' $(location :composed_aspects) && " +
           "grep -qF 'first -> @@testproject+//:mid_a: [@@testproject+//:leaf, @@testproject+//:mid_a]' $(location :dict_labels) && " +
           "grep -qF 'second -> @@testproject+//:leaf: [@@testproject+//:leaf]' $(location :dict_labels) && " +

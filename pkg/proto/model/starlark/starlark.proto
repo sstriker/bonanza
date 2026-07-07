@@ -94,6 +94,11 @@ message Aspect {
     // Canonical Starlark identifiers of providers that the
     // implementation function must return, sorted alphabetically.
     repeated string provides = 6;
+
+    // Attributes of the aspect, sorted by name. Aspect attributes
+    // are either private (name starting with an underscore) or
+    // string typed parameters, and always carry a default value.
+    repeated NamedAttr attrs = 7;
   }
 
   oneof kind {

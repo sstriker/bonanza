@@ -491,6 +491,45 @@ func (c *baseComputer[TReference, TMetadata]) ComputeConfiguredAspectValue(ctx c
 	if l := len(ruleTargetPublicAttrValues); l != 0 {
 		return PatchedConfiguredAspectValue[TMetadata]{}, fmt.Errorf("rule target has %d more public attr values than the rule definition has public attrs", l)
 	}
+
+	// Obtain the values of the aspect's own attrs, so that they can
+	// be exposed through ctx.attr, separate from the rule target's
+	// attrs exposed through ctx.rule.attr. Aspect attrs always carry
+	// a default value, which is what gets configured, as no explicit
+	// values can be provided. Just like for a rule's private attrs,
+	// default values were canonicalized relative to the package
+	// declaring the aspect, which is also the package from which
+	// visibility is computed. The aspect does not propagate to its
+	// own attrs, as attr_aspects only applies to the attrs of the
+	// rule targets that the aspect visits.
+	aspectPackage := aspectIdentifier.GetCanonicalLabel().GetCanonicalPackage()
+	aspectAttrValues := make(map[string]any, len(aspectDefinition.Message.Attrs))
+	for _, namedAttr := range aspectDefinition.Message.Attrs {
+		defaultValue := namedAttr.Attr.GetDefault()
+		if defaultValue == nil {
+			return PatchedConfiguredAspectValue[TMetadata]{}, fmt.Errorf("aspect attr %#v does not have a default value", namedAttr.Name)
+		}
+		attrValue, err := c.configureAttrValueParts(
+			ctx,
+			e,
+			thread,
+			model_core.Nested(aspectDefinition, namedAttr),
+			model_core.Nested(aspectDefinition, []*model_starlark_pb.Value{defaultValue}),
+			configurationReference,
+			/* visibilityFromPackage = */ aspectPackage,
+			execGroupPlatformLabels,
+			/* extraAspectIdentifiers = */ nil,
+		)
+		if err != nil {
+			if errors.Is(err, evaluation.ErrMissingDependency) {
+				missingDependencies = true
+				continue
+			}
+			return PatchedConfiguredAspectValue[TMetadata]{}, fmt.Errorf("aspect attr %#v: %w", namedAttr.Name, err)
+		}
+		aspectAttrValues[namedAttr.Name] = attrValue
+	}
+
 	if missingDependencies {
 		return PatchedConfiguredAspectValue[TMetadata]{}, evaluation.ErrMissingDependency
 	}
@@ -511,8 +550,7 @@ func (c *baseComputer[TReference, TMetadata]) ComputeConfiguredAspectValue(ctx c
 	ctxVar := starlark.NewDict(0)
 	ctxVar.Freeze()
 	aspectCtx := model_starlark.NewStructFromDict[TReference, TMetadata](nil, map[string]any{
-		// TODO: Provide the values of the aspect's own attrs.
-		"attr": model_starlark.NewStructFromDict[TReference, TMetadata](nil, nil),
+		"attr": model_starlark.NewStructFromDict[TReference, TMetadata](nil, aspectAttrValues),
 		"bin_dir": model_starlark.NewStructFromDict[TReference, TMetadata](nil, map[string]any{
 			"path": starlark.String(model_starlark.ComponentStrBazelOut + "/" + configurationComponent + "/" + model_starlark.ComponentStrBin),
 		}),
