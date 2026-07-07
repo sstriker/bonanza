@@ -1,6 +1,7 @@
 AnalysisFailure = provider()
 AnalysisFailureInfo = provider()
 AnalysisTestResultInfo = provider()
+CcSharedLibraryHintInfo = provider()
 ConfigSettingInfo = provider()
 ConstraintSettingInfo = provider()
 ConstraintValueInfo = provider()
@@ -1626,6 +1627,7 @@ exported_rules = {
 exported_toplevels = {
     "AnalysisFailureInfo": AnalysisFailureInfo,
     "AnalysisTestResultInfo": AnalysisTestResultInfo,
+    "CcSharedLibraryHintInfo": CcSharedLibraryHintInfo,
     "DefaultInfo": DefaultInfo,
     "OutputGroupInfo": OutputGroupInfo,
     "RunEnvironmentInfo": RunEnvironmentInfo,
