@@ -57,14 +57,6 @@ type ValueEncodingOptions[TReference any, TMetadata model_core.ReferenceMetadata
 	// is used to break reference cycles that re-enter one of these
 	// globals by emitting Value messages of kind "global_reference".
 	globalIdentifiers map[starlark.Value]pg_label.CanonicalStarlarkIdentifier
-
-	// The number of function closures whose default parameters and
-	// free variables are currently being encoded. References to
-	// globals may only be emitted at positions beneath a closure,
-	// as those are the only positions that are decoded lazily.
-	// Encoding is performed by a single goroutine, meaning that no
-	// locking is needed to mutate this counter.
-	insideClosureCount int
 }
 
 // ComputeListParentNode generates a parent node of a Starlark list that
@@ -195,6 +187,9 @@ func EncodeCompiledProgram[TReference any, TMetadata model_core.ReferenceMetadat
 					// If the same value is bound to
 					// multiple globals, deterministically
 					// pick the alphabetically first name.
+					// The map entry is temporarily
+					// rebound below while each aliased
+					// global's own copy is encoded.
 					globalIdentifiers[value] = options.CurrentFilename.AppendStarlarkIdentifier(identifier)
 				}
 			}
@@ -219,7 +214,21 @@ func EncodeCompiledProgram[TReference any, TMetadata model_core.ReferenceMetadat
 		}
 		value := globals[name]
 		if _, ok := value.(NamedGlobal); ok || identifier.IsPublic() {
+			// If the same value is bound to multiple globals,
+			// each of them is persisted as an independent copy.
+			// Self-references inside each copy must resolve
+			// back to the global that is currently being
+			// encoded, so that methods returning the value
+			// preserve the identity of the global through which
+			// they were reached.
+			previousIdentifier, valueIsAliasable := options.globalIdentifiers[value]
+			if valueIsAliasable {
+				options.globalIdentifiers[value] = *currentIdentifier
+			}
 			encodedValue, valueNeedsCode, err := EncodeValue[TReference, TMetadata](value, map[starlark.Value]struct{}{}, currentIdentifier, options)
+			if valueIsAliasable {
+				options.globalIdentifiers[value] = previousIdentifier
+			}
 			if err != nil {
 				return model_core.PatchedMessage[*model_starlark_pb.CompiledProgram, TMetadata]{}, fmt.Errorf("global %#v: %w", name, err)
 			}
@@ -265,22 +274,6 @@ func EncodeCompiledProgram[TReference any, TMetadata model_core.ReferenceMetadat
 // EncodeValue converts a Starlark value object to a Protobuf message,
 // so that it can be written to storage.
 func EncodeValue[TReference any, TMetadata model_core.ReferenceMetadata](value starlark.Value, path map[starlark.Value]struct{}, currentIdentifier *pg_label.CanonicalStarlarkIdentifier, options *ValueEncodingOptions[TReference, TMetadata]) (model_core.PatchedMessage[*model_starlark_pb.Value, TMetadata], bool, error) {
-	// If a value that is bound to one of the persisted globals of
-	// the file that is currently being compiled is encountered
-	// while encoding a function closure, encode it as a reference
-	// to that global. As closures are only decoded upon the first
-	// call to the function, this breaks reference cycles of values
-	// that are defined recursively.
-	if options.insideClosureCount > 0 {
-		if identifier, ok := options.globalIdentifiers[value]; ok {
-			return model_core.NewSimplePatchedMessage[TMetadata](&model_starlark_pb.Value{
-				Kind: &model_starlark_pb.Value_GlobalReference{
-					GlobalReference: identifier.String(),
-				},
-			}), false, nil
-		}
-	}
-
 	if value == starlark.None {
 		return model_core.NewSimplePatchedMessage[TMetadata](&model_starlark_pb.Value{
 			Kind: &model_starlark_pb.Value_None{
@@ -465,6 +458,30 @@ func EncodeValue[TReference any, TMetadata model_core.ReferenceMetadata](value s
 	default:
 		return model_core.PatchedMessage[*model_starlark_pb.Value, TMetadata]{}, false, fmt.Errorf("value of type %s cannot be encoded", value.Type())
 	}
+}
+
+// encodeClosureValue encodes a default parameter or free variable of a
+// function closure. If the value is bound to one of the persisted
+// globals of the file that is currently being compiled, it is encoded
+// as a reference to that global. As closures are only decoded upon the
+// first call to the function, this breaks reference cycles of values
+// that are defined recursively.
+//
+// References to globals may only be emitted at the immediate default
+// parameter and free variable positions, as those are the only
+// positions that are guaranteed to be decoded lazily. Emitting them at
+// positions further down would cause them to leak into eagerly decoded
+// positions when containing values such as structs are re-encoded into
+// other files verbatim.
+func encodeClosureValue[TReference any, TMetadata model_core.ReferenceMetadata](value starlark.Value, path map[starlark.Value]struct{}, options *ValueEncodingOptions[TReference, TMetadata]) (model_core.PatchedMessage[*model_starlark_pb.Value, TMetadata], bool, error) {
+	if identifier, ok := options.globalIdentifiers[value]; ok {
+		return model_core.NewSimplePatchedMessage[TMetadata](&model_starlark_pb.Value{
+			Kind: &model_starlark_pb.Value_GlobalReference{
+				GlobalReference: identifier.String(),
+			},
+		}), false, nil
+	}
+	return EncodeValue[TReference, TMetadata](value, path, nil, options)
 }
 
 // encodeListElements encodes a sequence of Starlark values to a B-tree

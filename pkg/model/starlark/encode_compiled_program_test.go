@@ -207,10 +207,13 @@ PAIR_A, PAIR_B = _create_pair()
 	})
 
 	t.Run("AliasedGlobals", func(t *testing.T) {
-		// If the same value is bound to multiple globals,
-		// references must deterministically use the
-		// alphabetically first name.
-		_, compiledProgram, err := compileAndEncodeProgram(t, canonicalLabel, `
+		// If the same value is bound to multiple globals, each
+		// global is persisted as an independent copy. The
+		// self-references inside each copy must resolve back to
+		// the copy itself, so that methods returning the value
+		// preserve the identity of the global through which
+		// they were reached.
+		program, compiledProgram, err := compileAndEncodeProgram(t, canonicalLabel, `
 def _create_flag_enum():
     self = struct(get_self = lambda: self)
     return self
@@ -222,14 +225,55 @@ FLAG_A = FLAG_B
 
 		encodedGlobals := compiledProgram.Message.GetGlobals()
 		require.Equal(t, []string{"FLAG_A", "FLAG_B"}, encodedGlobals.Keys)
-		for i := range encodedGlobals.Values {
+		for i, name := range encodedGlobals.Keys {
 			encodedStruct := encodedGlobals.Values[i].GetLeaf().GetStruct()
 			require.NotNil(t, encodedStruct)
 			closure := encodedStruct.Fields.Values[0].GetLeaf().GetFunction().GetClosure()
 			require.NotNil(t, closure)
 			require.Len(t, closure.FreeVariables, 1)
-			require.Equal(t, "@@example+//:flags.bzl%FLAG_A", closure.FreeVariables[0].GetGlobalReference())
+			require.Equal(t, "@@example+//:flags.bzl%"+name, closure.FreeVariables[0].GetGlobalReference())
 		}
+
+		decodedGlobals, thread := decodeAndCall(t, program, compiledProgram)
+		for _, name := range encodedGlobals.Keys {
+			flag := decodedGlobals[name]
+			getSelf, err := flag.(starlark.HasAttrs).Attr(thread, "get_self")
+			require.NoError(t, err)
+			self, err := starlark.Call(thread, getSelf, nil, nil)
+			require.NoError(t, err)
+			require.Same(t, flag, self)
+		}
+	})
+
+	t.Run("GlobalsBeneathClosuresAreInlined", func(t *testing.T) {
+		// Globals that are merely contained in values captured
+		// by a closure must still be encoded inline. Emitting
+		// global references at such nested positions would
+		// cause them to leak into eagerly decoded positions
+		// when the containing value is re-encoded into another
+		// file verbatim (e.g. as a struct field).
+		_, compiledProgram, err := compileAndEncodeProgram(t, canonicalLabel, `
+FLAG = struct(name = "f")
+
+def _make():
+    config = struct(flag = FLAG)
+    return lambda: config
+
+get_config = _make()
+`, bzlFileBuiltins)
+		require.NoError(t, err)
+
+		encodedGlobals := compiledProgram.Message.GetGlobals()
+		require.Equal(t, []string{"FLAG", "get_config"}, encodedGlobals.Keys)
+		closure := encodedGlobals.Values[1].GetLeaf().GetFunction().GetClosure()
+		require.NotNil(t, closure)
+		require.Len(t, closure.FreeVariables, 1)
+		configStruct := closure.FreeVariables[0].GetStruct()
+		require.NotNil(t, configStruct)
+		require.Equal(t, []string{"flag"}, configStruct.Fields.Keys)
+		flagStruct := configStruct.Fields.Values[0].GetLeaf().GetStruct()
+		require.NotNil(t, flagStruct)
+		require.Equal(t, []string{"name"}, flagStruct.Fields.Keys)
 	})
 
 	t.Run("SelfReferentialListStillFails", func(t *testing.T) {

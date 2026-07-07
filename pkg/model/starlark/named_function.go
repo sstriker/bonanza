@@ -127,19 +127,14 @@ func (d starlarkNamedFunctionDefinition[TReference, TMetadata]) Encode(path map[
 		// are only decoded when the function is called for the
 		// first time, which happens after all globals of the
 		// current file have been decoded. This means that any
-		// references to persisted globals of the current file
-		// that occur beneath them may safely be encoded by
-		// name, thereby breaking reference cycles.
-		if options.globalIdentifiers != nil {
-			options.insideClosureCount++
-			defer func() { options.insideClosureCount-- }()
-		}
-
+		// persisted globals of the current file that are bound
+		// to them may safely be encoded by name, thereby
+		// breaking reference cycles.
 		numRawDefaults := d.Function.NumRawDefaults()
 		defaultParameters := make([]*model_starlark_pb.Function_Closure_DefaultParameter, 0, numRawDefaults)
 		for index := 0; index < numRawDefaults; index++ {
 			if defaultValue := d.Function.RawDefault(index); defaultValue != nil {
-				encodedDefaultValue, defaultValueNeedsCode, err := EncodeValue[TReference, TMetadata](defaultValue, path, nil, options)
+				encodedDefaultValue, defaultValueNeedsCode, err := encodeClosureValue[TReference, TMetadata](defaultValue, path, options)
 				if err != nil {
 					return model_core.PatchedMessage[*model_starlark_pb.Function, TMetadata]{}, false, fmt.Errorf("default parameter %d: %w", index, err)
 				}
@@ -157,7 +152,7 @@ func (d starlarkNamedFunctionDefinition[TReference, TMetadata]) Encode(path map[
 		freeVars := make([]*model_starlark_pb.Value, 0, numFreeVars)
 		for index := 0; index < numFreeVars; index++ {
 			_, freeVar := d.Function.FreeVar(index)
-			encodedFreeVar, freeVarNeedsCode, err := EncodeValue[TReference, TMetadata](freeVar, path, nil, options)
+			encodedFreeVar, freeVarNeedsCode, err := encodeClosureValue[TReference, TMetadata](freeVar, path, options)
 			if err != nil {
 				return model_core.PatchedMessage[*model_starlark_pb.Function, TMetadata]{}, false, fmt.Errorf("free variable %d: %w", index, err)
 			}
