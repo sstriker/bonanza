@@ -158,6 +158,7 @@ go_library(
         "@com_github_buildbarn_bb_storage//pkg/filesystem/path",
         "@com_github_buildbarn_bb_storage//pkg/util",
         "@com_github_kballard_go_shellquote//:go-shellquote",
+        "@com_github_klauspost_compress//zstd",
         "@com_github_ulikunitz_xz//:xz",
         "@org_golang_google_grpc//codes",
         "@org_golang_google_grpc//status",
@@ -174,6 +175,7 @@ go_library(
 go_test(
     name = "analysis_test",
     srcs = [
+        "archive_format_internal_test.go",
         "aspect_chain_test.go",
         "aspect_parameters_internal_test.go",
         "base_computer_test.go",
@@ -245,6 +247,7 @@ go_test(
         "@com_github_buildbarn_bb_storage//pkg/filesystem/path",  # keep
         "@com_github_buildbarn_bb_storage//pkg/testutil",
         "@com_github_buildbarn_bb_storage//pkg/util",
+        "@com_github_klauspost_compress//zstd",
         "@com_github_stretchr_testify//require",
         "@com_github_ulikunitz_xz//:xz",
         "@org_golang_google_protobuf//encoding/protojson",

@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
+	"encoding/base64"
 	"io"
 	"math/rand"
 	"testing"
@@ -21,6 +22,7 @@ import (
 	model_filesystem_pb "bonanza.build/pkg/proto/model/filesystem"
 
 	"github.com/buildbarn/bb-storage/pkg/testutil"
+	"github.com/klauspost/compress/zstd"
 	"github.com/stretchr/testify/require"
 	"github.com/ulikunitz/xz"
 
@@ -59,6 +61,26 @@ func newTestTarball(t *testing.T, newCompressor func(io.Writer) io.WriteCloser, 
 
 func newGzipCompressor(w io.Writer) io.WriteCloser {
 	return gzip.NewWriter(w)
+}
+
+type nopWriteCloser struct {
+	io.Writer
+}
+
+func (nopWriteCloser) Close() error {
+	return nil
+}
+
+func newNopCompressor(w io.Writer) io.WriteCloser {
+	return nopWriteCloser{Writer: w}
+}
+
+func newZstdCompressor(w io.Writer) io.WriteCloser {
+	compressor, err := zstd.NewWriter(w)
+	if err != nil {
+		panic(err)
+	}
+	return compressor
 }
 
 func newXZCompressor(w io.Writer) io.WriteCloser {
@@ -305,6 +327,38 @@ func TestHTTPArchiveContents(t *testing.T) {
 	t.Run("TarXz", func(t *testing.T) {
 		archive := newTestTarball(t, newXZCompressor, tarballEntries)
 		result := bct.computeHTTPArchiveContents(ctx, t, ctrl, model_analysis_pb.HttpArchiveContents_Key_TAR_XZ, archive)
+		require.NoError(t, result.err)
+		require.Equal(t, expectedTarballContents, bct.readHTTPArchiveContents(ctx, t, result.value))
+	})
+
+	t.Run("Tar", func(t *testing.T) {
+		archive := newTestTarball(t, newNopCompressor, tarballEntries)
+		result := bct.computeHTTPArchiveContents(ctx, t, ctrl, model_analysis_pb.HttpArchiveContents_Key_TAR, archive)
+		require.NoError(t, result.err)
+		require.Equal(t, expectedTarballContents, bct.readHTTPArchiveContents(ctx, t, result.value))
+	})
+
+	t.Run("TarBz2", func(t *testing.T) {
+		// The Go standard library cannot create bzip2 compressed
+		// data. Use a tarball containing tarballEntries that was
+		// generated using Python's tarfile and bz2 modules.
+		archive, err := base64.StdEncoding.DecodeString(
+			"QlpoOTFBWSZTWbfnPGgAARPfgMvAaAH/gABBBsR/b95gDMgwANjbEKNBoNAAAAAD" +
+				"QCFHqeiaEyaaYJ+ojJkNGmRgIpRGKP1ExMI9EYT1NGnpqGNL7iw//onyZXTC0hTZ" +
+				"bOoYPFAGuur0PUuWfWRGYA0GvBMVQskkqkCsAV9LTk4vaM8Gq6Y9wkIklgUDhvss" +
+				"48SkF0wsVRBEEcJnVPNJEMDM0MkHoJqWHdZGwAcfFilkBLbpBoQGUR7WYoGHhQ+X" +
+				"nrFgJ2NKkQe7H4pxN0QLwE64bBCPhlIipooJIASgzHU6rhGOhT2XwL2jOhhKHHen" +
+				"K3GG9AO4u5IpwoSFvznjQA==",
+		)
+		require.NoError(t, err)
+		result := bct.computeHTTPArchiveContents(ctx, t, ctrl, model_analysis_pb.HttpArchiveContents_Key_TAR_BZ2, archive)
+		require.NoError(t, result.err)
+		require.Equal(t, expectedTarballContents, bct.readHTTPArchiveContents(ctx, t, result.value))
+	})
+
+	t.Run("TarZst", func(t *testing.T) {
+		archive := newTestTarball(t, newZstdCompressor, tarballEntries)
+		result := bct.computeHTTPArchiveContents(ctx, t, ctrl, model_analysis_pb.HttpArchiveContents_Key_TAR_ZST, archive)
 		require.NoError(t, result.err)
 		require.Equal(t, expectedTarballContents, bct.readHTTPArchiveContents(ctx, t, result.value))
 	})

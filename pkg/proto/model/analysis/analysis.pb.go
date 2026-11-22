@@ -136,6 +136,9 @@ const (
 	HttpArchiveContents_Key_TAR_GZ  HttpArchiveContents_Key_Format = 1
 	HttpArchiveContents_Key_TAR_XZ  HttpArchiveContents_Key_Format = 2
 	HttpArchiveContents_Key_ZIP     HttpArchiveContents_Key_Format = 3
+	HttpArchiveContents_Key_TAR     HttpArchiveContents_Key_Format = 4
+	HttpArchiveContents_Key_TAR_BZ2 HttpArchiveContents_Key_Format = 5
+	HttpArchiveContents_Key_TAR_ZST HttpArchiveContents_Key_Format = 6
 )
 
 // Enum value maps for HttpArchiveContents_Key_Format.
@@ -145,12 +148,18 @@ var (
 		1: "TAR_GZ",
 		2: "TAR_XZ",
 		3: "ZIP",
+		4: "TAR",
+		5: "TAR_BZ2",
+		6: "TAR_ZST",
 	}
 	HttpArchiveContents_Key_Format_value = map[string]int32{
 		"UNKNOWN": 0,
 		"TAR_GZ":  1,
 		"TAR_XZ":  2,
 		"ZIP":     3,
+		"TAR":     4,
+		"TAR_BZ2": 5,
+		"TAR_ZST": 6,
 	}
 )
 
@@ -17398,18 +17407,21 @@ const file_bonanza_build_pkg_proto_model_analysis_analysis_proto_rawDesc = "" +
 	"\x10HttpFetchOptions\x123\n" +
 	"\x06target\x18\x01 \x01(\v2\x1b.bonanza.model.fetch.TargetR\x06target\x12\x1d\n" +
 	"\n" +
-	"allow_fail\x18\x02 \x01(\bR\tallowFail\"\xe2\x04\n" +
-	"\x13HttpArchiveContents\x1a\x9a\x02\n" +
+	"allow_fail\x18\x02 \x01(\bR\tallowFail\"\x85\x05\n" +
+	"\x13HttpArchiveContents\x1a\xbd\x02\n" +
 	"\x03Key\x12M\n" +
 	"\rfetch_options\x18\x01 \x01(\v2(.bonanza.model.analysis.HttpFetchOptionsR\ffetchOptions\x12N\n" +
-	"\x06format\x18\x02 \x01(\x0e26.bonanza.model.analysis.HttpArchiveContents.Key.FormatR\x06format\"6\n" +
+	"\x06format\x18\x02 \x01(\x0e26.bonanza.model.analysis.HttpArchiveContents.Key.FormatR\x06format\"Y\n" +
 	"\x06Format\x12\v\n" +
 	"\aUNKNOWN\x10\x00\x12\n" +
 	"\n" +
 	"\x06TAR_GZ\x10\x01\x12\n" +
 	"\n" +
 	"\x06TAR_XZ\x10\x02\x12\a\n" +
-	"\x03ZIP\x10\x03:<\xf2\xd7 8\n" +
+	"\x03ZIP\x10\x03\x12\a\n" +
+	"\x03TAR\x10\x04\x12\v\n" +
+	"\aTAR_BZ2\x10\x05\x12\v\n" +
+	"\aTAR_ZST\x10\x06:<\xf2\xd7 8\n" +
 	"6Downloading and extracting {fetch_options.target.urls}\x1af\n" +
 	"\bProgress\x12G\n" +
 	"\textracted\x18\x01 \x01(\v2).bonanza.model.evaluation.ProgressCounterR\textracted:\x11\xfa\xd7 \r\n" +
