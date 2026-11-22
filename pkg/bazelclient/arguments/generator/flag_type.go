@@ -118,10 +118,73 @@ func (buildSettingFlagType) emitLongNameParser(flagSetName, longName string) {
 }
 
 func (buildSettingFlagType) emitShortNameParser(flagSetName, longName, shortName string) {
-	panic("build setting flags cannot be used with short names")
+	fmt.Printf("case %#v:\n", "-"+shortName)
+	fmt.Printf("  if len(*currentArgs) == 0 {\n")
+	fmt.Printf("    return FlagMissingValueError{Flag: shortOptionName}\n")
+	fmt.Printf("  }\n")
+	fmt.Printf("  optionValue := (*currentArgs)[0]\n")
+	fmt.Printf("  (*currentArgs) = (*currentArgs)[1:]\n")
+	fmt.Printf("  if cmd.get%sFlags() != nil {\n", toSymbolName(flagSetName, true))
+	fmt.Printf("    cmd.appendBuildSettingOverride(BuildSettingOverride{\n")
+	fmt.Printf("      Label: label.MustNewAbsoluteLabel(%#v),\n", "@bazel_tools//command_line_option:"+longName)
+	fmt.Printf("      Value: optionValue,\n")
+	fmt.Printf("    })\n")
+	fmt.Printf("  } else if mustApply {\n")
+	fmt.Printf("    return FlagNotApplicableError{Flag: shortOptionName}\n")
+	fmt.Printf("  }\n")
 }
 
 func (buildSettingFlagType) emitStartupParser(longName string) {
+	panic("build setting flags cannot be used for startup flags")
+}
+
+// boolBuildSettingFlagType is used for flags that set the value of a
+// Boolean build setting. Like regular Boolean flags, they may be
+// provided without a value (--foo), negated (--nofoo), or provided
+// with an explicit value (--foo=false).
+type boolBuildSettingFlagType struct{}
+
+func (boolBuildSettingFlagType) emitStructField(longName string) {}
+
+func (boolBuildSettingFlagType) emitDefaultInitializer(longName string) {}
+
+func (boolBuildSettingFlagType) emitLongNameParser(flagSetName, longName string) {
+	flagSetSymbolName := toSymbolName(flagSetName, true)
+	buildSettingLabel := "@bazel_tools//command_line_option:" + longName
+
+	fmt.Printf("case %#v:\n", "--"+longName)
+	fmt.Printf("  var value bool\n")
+	fmt.Printf("  if err := parseBool(assignmentIndex >= 0, optionValue, &value, longOptionName); err != nil {\n")
+	fmt.Printf("    return err\n")
+	fmt.Printf("  }\n")
+	fmt.Printf("  if cmd.get%sFlags() != nil {\n", flagSetSymbolName)
+	fmt.Printf("    cmd.appendBuildSettingOverride(BuildSettingOverride{\n")
+	fmt.Printf("      Label: label.MustNewAbsoluteLabel(%#v),\n", buildSettingLabel)
+	fmt.Printf("      Value: strconv.FormatBool(value),\n")
+	fmt.Printf("    })\n")
+	fmt.Printf("  } else if mustApply {\n")
+	fmt.Printf("    return FlagNotApplicableError{Flag: longOptionName}\n")
+	fmt.Printf("  }\n")
+
+	fmt.Printf("case %#v:\n", "--no"+longName)
+	fmt.Printf("  if assignmentIndex >= 0 {\n")
+	fmt.Printf("    return FlagUnexpectedValueError{Flag: longOptionName}\n")
+	fmt.Printf("  }\n")
+	fmt.Printf("  if cmd.get%sFlags() != nil {\n", flagSetSymbolName)
+	fmt.Printf("    cmd.appendBuildSettingOverride(BuildSettingOverride{\n")
+	fmt.Printf("      Label: label.MustNewAbsoluteLabel(%#v),\n", buildSettingLabel)
+	fmt.Printf("      Value: \"false\",\n")
+	fmt.Printf("    })\n")
+	fmt.Printf("  } else if mustApply {\n")
+	fmt.Printf("    return FlagNotApplicableError{Flag: longOptionName}\n")
+	fmt.Printf("  }\n")
+}
+
+func (boolBuildSettingFlagType) emitShortNameParser(flagSetName, longName, shortName string) {
+	panic("Boolean build setting flags cannot be used with short names")
+}
+
+func (boolBuildSettingFlagType) emitStartupParser(longName string) {
 	panic("build setting flags cannot be used for startup flags")
 }
 
