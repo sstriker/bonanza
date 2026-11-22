@@ -3307,6 +3307,7 @@ func (c *baseComputer[TReference, TMetadata]) fetchModuleExtensionRepo(ctx conte
 type repositoryContext[TReference object.BasicReference, TMetadata model_core.ReferenceMetadata] struct {
 	moduleOrRepositoryContext *moduleOrRepositoryContext[TReference, TMetadata]
 	canonicalRepo             label.CanonicalRepo
+	originalName              label.ApparentRepo
 	rootRepoComponent         path.Component
 	attrs                     eval.Value
 }
@@ -3370,12 +3371,20 @@ func (rc *repositoryContext[TReference, TMetadata]) Attr(thread *eval.Thread, na
 		return eval.NewBuiltin("repository_ctx.delete", rc.doDelete), nil
 	case "name":
 		return eval.String(rc.canonicalRepo.String()), nil
+	case "original_name":
+		return eval.String(rc.originalName.String()), nil
 	case "patch":
 		return eval.NewBuiltin("repository_ctx.patch", rc.doPatch), nil
+	case "rename":
+		return eval.NewBuiltin("repository_ctx.rename", rc.doRename), nil
+	case "repo_metadata":
+		return eval.NewBuiltin("repository_ctx.repo_metadata", rc.doRepoMetadata), nil
 	case "symlink":
 		return eval.NewBuiltin("repository_ctx.symlink", rc.doSymlink), nil
 	case "template":
 		return eval.NewBuiltin("repository_ctx.template", rc.doTemplate), nil
+	case "watch_tree":
+		return eval.NewBuiltin("repository_ctx.watch_tree", mrc.doWatch), nil
 	case "workspace_root":
 		if err := mrc.maybeGetStableInputRootPath(); err != nil {
 			return nil, err
@@ -3399,17 +3408,126 @@ func (repositoryContext[TReference, TMetadata]) AttrNames(*eval.Thread) ([]strin
 		"file",
 		"getenv",
 		"name",
+		"original_name",
 		"os",
 		"patch",
 		"path",
 		"read",
+		"rename",
+		"repo_metadata",
 		"report_progress",
 		"symlink",
 		"template",
 		"watch",
+		"watch_tree",
 		"which",
 		"workspace_root",
 	}, nil
+}
+
+func (rc *repositoryContext[TReference, TMetadata]) doRename(thread *eval.Thread, b *eval.Builtin, args eval.Args) (eval.Value, error) {
+	mrc := rc.moduleOrRepositoryContext
+	mrc.maybeGetDirectoryReaders()
+	if err := mrc.maybeGetStableInputRootPath(); err != nil {
+		return nil, err
+	}
+	if mrc.directoryLoadOptions == nil {
+		return nil, evaluation.ErrMissingDependency
+	}
+
+	var src, dst *model_starlark.BarePath
+	if err := eval.UnpackArgs(
+		thread, b.Name(), args,
+		"src", unpack.Bind(&src, mrc.pathUnpackerInto),
+		"dst", unpack.Bind(&dst, mrc.pathUnpackerInto),
+	); err != nil {
+		return nil, err
+	}
+
+	// Look up the file, directory or symbolic link to rename.
+	srcResolver := &changeTrackingDirectoryExistingFileResolver[TReference, TMetadata]{
+		loadOptions: mrc.directoryLoadOptions,
+		stack:       util.NewNonEmptyStack(mrc.inputRootDirectory),
+	}
+	if err := path.Resolve(src, mrc.virtualRootScopeWalkerFactory.New(srcResolver)); err != nil {
+		return nil, fmt.Errorf("cannot resolve %#v: %w", src.GetUNIXString(), err)
+	}
+	if !srcResolver.gotScope || srcResolver.TerminalName == nil {
+		return nil, fmt.Errorf("%#v does not resolve to a location inside the repository", src.GetUNIXString())
+	}
+	srcDirectory, srcName := srcResolver.stack.Peek(), *srcResolver.TerminalName
+	if err := srcDirectory.maybeLoadContents(mrc.directoryLoadOptions); err != nil {
+		return nil, err
+	}
+	srcChildDirectory, isDirectory := srcDirectory.directories[srcName]
+	srcFile, isFile := srcDirectory.files[srcName]
+	srcSymlink, isSymlink := srcDirectory.symlinks[srcName]
+	if !isDirectory && !isFile && !isSymlink {
+		return nil, fmt.Errorf("%#v does not exist", src.GetUNIXString())
+	}
+
+	// Remove it from its original location before resolving the
+	// destination, so that parent directories of the destination
+	// that are created don't end up inside of it.
+	delete(srcDirectory.directories, srcName)
+	delete(srcDirectory.files, srcName)
+	delete(srcDirectory.symlinks, srcName)
+
+	dstResolver := &changeTrackingDirectoryNewFileResolver[TReference, TMetadata]{
+		loadOptions: mrc.directoryLoadOptions,
+		stack:       util.NewNonEmptyStack(mrc.inputRootDirectory),
+	}
+	if err := path.Resolve(dst, mrc.virtualRootScopeWalkerFactory.New(dstResolver)); err != nil {
+		return nil, fmt.Errorf("cannot resolve %#v: %w", dst.GetUNIXString(), err)
+	}
+	if dstResolver.TerminalName == nil {
+		return nil, fmt.Errorf("%#v does not resolve to a file", dst.GetUNIXString())
+	}
+	dstDirectory, dstName := dstResolver.stack.Peek(), *dstResolver.TerminalName
+	if err := dstDirectory.maybeLoadContents(mrc.directoryLoadOptions); err != nil {
+		return nil, err
+	}
+	if _, ok := dstDirectory.directories[dstName]; ok {
+		return nil, fmt.Errorf("%#v already exists", dst.GetUNIXString())
+	}
+	if _, ok := dstDirectory.files[dstName]; ok {
+		return nil, fmt.Errorf("%#v already exists", dst.GetUNIXString())
+	}
+	if _, ok := dstDirectory.symlinks[dstName]; ok {
+		return nil, fmt.Errorf("%#v already exists", dst.GetUNIXString())
+	}
+
+	switch {
+	case isDirectory:
+		dstDirectory.setDirectorySimple(dstName, srcChildDirectory)
+	case isFile:
+		dstDirectory.setFileSimple(dstName, srcFile)
+	default:
+		dstDirectory.setSymlinkSimple(dstName, srcSymlink)
+	}
+	return eval.None, nil
+}
+
+func (*repositoryContext[TReference, TMetadata]) doRepoMetadata(thread *eval.Thread, b *eval.Builtin, args eval.Args) (eval.Value, error) {
+	reproducible := false
+	var attrsForReproducibility eval.Value = eval.None
+	if len(args.Positional) > 0 {
+		return nil, fmt.Errorf("%s: got %d positional arguments, want 0", b.Name(), len(args.Positional))
+	}
+	if err := eval.UnpackArgs(
+		thread, b.Name(), args,
+		"reproducible?", unpack.Bind(&reproducible, unpack.Bool),
+		"attrs_for_reproducibility?", unpack.Bind(&attrsForReproducibility, unpack.Any),
+	); err != nil {
+		return nil, err
+	}
+
+	// Bazel uses this metadata to determine whether the contents
+	// of repos may be cached across workspaces, and to amend
+	// attributes to make them reproducible. In Bonanza the
+	// contents of repos are always cached, and the value returned
+	// by the implementation function is ignored.
+	return eval.None, nil
 }
 
 func (rc *repositoryContext[TReference, TMetadata]) doDelete(thread *eval.Thread, b *eval.Builtin, args eval.Args) (eval.Value, error) {
@@ -3772,6 +3890,7 @@ func (c *baseComputer[TReference, TMetadata]) fetchRepo(ctx context.Context, can
 		&repositoryContext[TReference, TMetadata]{
 			moduleOrRepositoryContext: mrc,
 			canonicalRepo:             canonicalRepo,
+			originalName:              apparentRepo,
 			rootRepoComponent:         path.MustNewComponent(rootRepo.String()),
 			attrs:                     model_starlark.NewStructFromDict[TReference, TMetadata](nil, attrs),
 		},

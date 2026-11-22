@@ -443,6 +443,12 @@ func (c *baseComputer[TReference, TMetadata]) ComputeModuleExtensionReposValue(c
 			"which":                              eval.NewBuiltin("module_ctx.which", moduleContext.doWhich),
 
 			// Fields specific to module_ctx.
+			//
+			// Facts are persisted by Bazel in the lockfile
+			// across executions. Bonanza has no lockfile,
+			// so there are never any facts from a previous
+			// execution.
+			"facts": eval.NewDict(),
 			"extension_metadata": eval.NewBuiltin(
 				"module_ctx.extension_metadata",
 				func(thread *eval.Thread, b *eval.Builtin, args eval.Args) (eval.Value, error) {
