@@ -3944,10 +3944,10 @@ func (c *baseComputer[TReference, TMetadata]) ComputeRepoValue(ctx context.Conte
 					starlarkValueEncoders,
 				)
 			case *model_analysis_pb.ModuleOverride_Definition_SingleVersion:
-				if override.SingleVersion.Version != "" {
-					// TODO: Implement!
-					return PatchedRepoValue[TMetadata]{}, errors.New("single version override with exact version should skip Minimal Version Selection")
-				}
+				// Any version and registry provided to
+				// single_version_override() have already
+				// been taken into account while computing
+				// the build list.
 				singleVersionOverridePatchLabels = override.SingleVersion.PatchLabels
 				singleVersionOverridePatchCommands = override.SingleVersion.PatchCommands
 				singleVersionOverridePatchStrip = int(override.SingleVersion.PatchStrip)

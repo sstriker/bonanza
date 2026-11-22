@@ -425,6 +425,7 @@
             "ModuleDotBazelContents",
             "ModuleRegistryUrls",
             "ModulesWithOverrides",
+            "ModulesWithRemoteOverrides",
             "RootModule"
          ]
       },

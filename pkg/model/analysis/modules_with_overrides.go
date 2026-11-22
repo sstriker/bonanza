@@ -58,14 +58,12 @@ func moduleOverrideToOverrideModule(mo *model_analysis_pb.ModuleOverride) []*mod
 	case *model_analysis_pb.ModuleOverride_Definition_MultipleVersions:
 		olm.Versions = override.MultipleVersions.Versions
 	case *model_analysis_pb.ModuleOverride_Definition_SingleVersion:
-		if override.SingleVersion.Version == "" {
-			// If no version number is specified, we must
-			// still go through minimal version selection to
-			// determine the version to use. We should
-			// therefore not treat it as a module that is
-			// directly accessible.
-			return nil
-		}
+		// Modules with a single version override are still
+		// obtained from a registry. They should therefore not
+		// be treated as modules that are directly accessible.
+		// Any version pinning is applied while computing the
+		// rough build list.
+		return nil
 	}
 	return []*model_analysis_pb.OverridesListModule{olm}
 }
