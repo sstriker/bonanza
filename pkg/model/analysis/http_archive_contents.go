@@ -286,6 +286,157 @@ func (capturableArchiveDirectory[TReference, TMetadata]) Close() error {
 	return nil
 }
 
+// renameArchiveEntry applies the rename_files option of
+// repository_ctx.extract() and download_and_extract() to the name of
+// an entry of an archive.
+func renameArchiveEntry(name string, renameFiles map[string]string) string {
+	if newName, ok := renameFiles[name]; ok {
+		return newName
+	}
+	return name
+}
+
+// extractArchive extracts the contents of an archive into an in-memory
+// directory hierarchy. Merkle trees of regular files are created using
+// the provided callback. Tarballs are read sequentially, while ZIP
+// archives require random access.
+func extractArchive[TReference any](
+	format model_analysis_pb.HttpArchiveContents_Key_Format,
+	sequentialReader io.Reader,
+	randomAccessReader io.ReaderAt,
+	sizeBytes uint64,
+	renameFiles map[string]string,
+	createFileMerkleTree func(io.Reader) (model_core.Message[*model_filesystem_pb.FileContents, TReference], error),
+	reportProgress func(*model_analysis_pb.HttpArchiveContents_Progress),
+) (*archiveDirectory[TReference], error) {
+	var rootDirectory archiveDirectory[TReference]
+	var err error
+	switch format {
+	case model_analysis_pb.HttpArchiveContents_Key_TAR,
+		model_analysis_pb.HttpArchiveContents_Key_TAR_BZ2,
+		model_analysis_pb.HttpArchiveContents_Key_TAR_GZ,
+		model_analysis_pb.HttpArchiveContents_Key_TAR_XZ,
+		model_analysis_pb.HttpArchiveContents_Key_TAR_ZST:
+		compressedReader := progressReportingReader{
+			r:  sequentialReader,
+			pr: newArchiveProgressReporter(reportProgress, sizeBytes),
+		}
+		var decompressedReader io.Reader
+		switch format {
+		case model_analysis_pb.HttpArchiveContents_Key_TAR:
+			decompressedReader = compressedReader
+		case model_analysis_pb.HttpArchiveContents_Key_TAR_BZ2:
+			decompressedReader = bzip2.NewReader(compressedReader)
+		case model_analysis_pb.HttpArchiveContents_Key_TAR_GZ:
+			decompressedReader, err = gzip.NewReader(compressedReader)
+			if err != nil {
+				return nil, err
+			}
+		case model_analysis_pb.HttpArchiveContents_Key_TAR_XZ:
+			decompressedReader, err = xz.NewReader(compressedReader)
+			if err != nil {
+				return nil, err
+			}
+		case model_analysis_pb.HttpArchiveContents_Key_TAR_ZST:
+			zstdReader, err := zstd.NewReader(compressedReader)
+			if err != nil {
+				return nil, err
+			}
+			defer zstdReader.Close()
+			decompressedReader = zstdReader
+		default:
+			panic("unhandled compression format")
+		}
+		tarReader := tar.NewReader(decompressedReader)
+		for {
+			header, err := tarReader.Next()
+			if err != nil {
+				if err == io.EOF {
+					break
+				}
+				return nil, err
+			}
+
+			entryName := renameArchiveEntry(header.Name, renameFiles)
+			switch header.Typeflag {
+			case tar.TypeDir:
+				if err := rootDirectory.resolveNewDirectory(entryName); err != nil {
+					return nil, fmt.Errorf("invalid path %#v: %w", header.Name, err)
+				}
+			case tar.TypeReg, tar.TypeLink, tar.TypeSymlink:
+				d, name, err := rootDirectory.resolveNewFile(entryName)
+				if err != nil {
+					return nil, fmt.Errorf("invalid path %#v: %w", header.Name, err)
+				}
+
+				switch header.Typeflag {
+				case tar.TypeReg:
+					contents, err := createFileMerkleTree(tarReader)
+					if err != nil {
+						return nil, fmt.Errorf("failed to extract file %#v: %w", header.Name, err)
+					}
+					d.addFile(name, contents, header.Mode&0o111 != 0)
+				case tar.TypeLink:
+					// Hard links refer to a file that was
+					// extracted previously. As files are
+					// immutable, they can share contents.
+					target, err := rootDirectory.lookupFile(header.Linkname)
+					if err != nil {
+						return nil, fmt.Errorf("invalid hard link target %#v: %w", header.Linkname, err)
+					}
+					d.addFile(name, target.contents, target.isExecutable)
+				case tar.TypeSymlink:
+					if d.symlinks == nil {
+						d.symlinks = map[path.Component]path.Parser{}
+					}
+					d.symlinks[name] = path.UNIXFormat.NewParser(header.Linkname)
+				default:
+					panic("switch statement should have matched one of the cases above")
+				}
+			}
+		}
+	case model_analysis_pb.HttpArchiveContents_Key_ZIP:
+		zipReader, err := zip.NewReader(randomAccessReader, int64(sizeBytes))
+		if err != nil {
+			return nil, err
+		}
+		var compressedSizeBytes uint64
+		for _, file := range zipReader.File {
+			compressedSizeBytes += file.CompressedSize64
+		}
+		progressReporter := newArchiveProgressReporter(reportProgress, compressedSizeBytes)
+		for _, file := range zipReader.File {
+			fileName := renameArchiveEntry(file.Name, renameFiles)
+			if strings.HasSuffix(fileName, "/") {
+				if err := rootDirectory.resolveNewDirectory(fileName); err != nil {
+					return nil, fmt.Errorf("invalid path %#v: %w", file.Name, err)
+				}
+			} else {
+				d, name, err := rootDirectory.resolveNewFile(fileName)
+				if err != nil {
+					return nil, fmt.Errorf("invalid path %#v: %w", file.Name, err)
+				}
+
+				f, err := file.Open()
+				if err != nil {
+					return nil, err
+				}
+				contents, err := createFileMerkleTree(f)
+				f.Close()
+				if err != nil {
+					return nil, fmt.Errorf("failed to extract file %#v: %w", file.Name, err)
+				}
+				d.addFile(name, contents, true)
+			}
+			progressReporter.add(file.CompressedSize64)
+		}
+	default:
+		return nil, errors.New("unknown archive format")
+	}
+
+	return &rootDirectory, nil
+}
+
 func (*baseComputer[TReference, TMetadata]) ComputeHTTPArchiveContentsValue(ctx context.Context, key *model_analysis_pb.HttpArchiveContents_Key, e HTTPArchiveContentsEnvironment[TReference, TMetadata]) (PatchedHTTPArchiveContentsValue[TMetadata], error) {
 	fileReader, gotFileReader := e.GetFileAccessParametersObject(&model_analysis_pb.FileAccessParameters_Key{})
 	directoryCreationParameters, gotDirectoryCreationParameters := e.GetDirectoryCreationParametersObject(&model_analysis_pb.DirectoryCreationParameters_Key{})
@@ -321,130 +472,17 @@ func (*baseComputer[TReference, TMetadata]) ComputeHTTPArchiveContentsValue(ctx 
 		return model_core.Unpatch(e, fileContents).Decay(), nil
 	}
 
-	var rootDirectory archiveDirectory[TReference]
-
-	switch key.Format {
-	case model_analysis_pb.HttpArchiveContents_Key_TAR,
-		model_analysis_pb.HttpArchiveContents_Key_TAR_BZ2,
-		model_analysis_pb.HttpArchiveContents_Key_TAR_GZ,
-		model_analysis_pb.HttpArchiveContents_Key_TAR_XZ,
-		model_analysis_pb.HttpArchiveContents_Key_TAR_ZST:
-		compressedReader := progressReportingReader{
-			r: fileReader.FileOpenRead(ctx, httpFileContentsEntry, 0),
-			pr: newArchiveProgressReporter(
-				e.ReportHTTPArchiveContentsProgress,
-				httpFileContentsEntry.GetEndBytes(),
-			),
-		}
-		var decompressedReader io.Reader
-		switch key.Format {
-		case model_analysis_pb.HttpArchiveContents_Key_TAR:
-			decompressedReader = compressedReader
-		case model_analysis_pb.HttpArchiveContents_Key_TAR_BZ2:
-			decompressedReader = bzip2.NewReader(compressedReader)
-		case model_analysis_pb.HttpArchiveContents_Key_TAR_GZ:
-			decompressedReader, err = gzip.NewReader(compressedReader)
-			if err != nil {
-				return PatchedHTTPArchiveContentsValue[TMetadata]{}, err
-			}
-		case model_analysis_pb.HttpArchiveContents_Key_TAR_XZ:
-			decompressedReader, err = xz.NewReader(compressedReader)
-			if err != nil {
-				return PatchedHTTPArchiveContentsValue[TMetadata]{}, err
-			}
-		case model_analysis_pb.HttpArchiveContents_Key_TAR_ZST:
-			zstdReader, err := zstd.NewReader(compressedReader)
-			if err != nil {
-				return PatchedHTTPArchiveContentsValue[TMetadata]{}, err
-			}
-			defer zstdReader.Close()
-			decompressedReader = zstdReader
-		default:
-			panic("unhandled compression format")
-		}
-		tarReader := tar.NewReader(decompressedReader)
-		for {
-			header, err := tarReader.Next()
-			if err != nil {
-				if err == io.EOF {
-					break
-				}
-				return PatchedHTTPArchiveContentsValue[TMetadata]{}, err
-			}
-
-			switch header.Typeflag {
-			case tar.TypeDir:
-				if err := rootDirectory.resolveNewDirectory(header.Name); err != nil {
-					return PatchedHTTPArchiveContentsValue[TMetadata]{}, fmt.Errorf("invalid path %#v: %w", header.Name, err)
-				}
-			case tar.TypeReg, tar.TypeLink, tar.TypeSymlink:
-				d, name, err := rootDirectory.resolveNewFile(header.Name)
-				if err != nil {
-					return PatchedHTTPArchiveContentsValue[TMetadata]{}, fmt.Errorf("invalid path %#v: %w", header.Name, err)
-				}
-
-				switch header.Typeflag {
-				case tar.TypeReg:
-					contents, err := createFileMerkleTree(tarReader)
-					if err != nil {
-						return PatchedHTTPArchiveContentsValue[TMetadata]{}, fmt.Errorf("failed to extract file %#v: %w", header.Name, err)
-					}
-					d.addFile(name, contents, header.Mode&0o111 != 0)
-				case tar.TypeLink:
-					// Hard links refer to a file that was
-					// extracted previously. As files are
-					// immutable, they can share contents.
-					target, err := rootDirectory.lookupFile(header.Linkname)
-					if err != nil {
-						return PatchedHTTPArchiveContentsValue[TMetadata]{}, fmt.Errorf("invalid hard link target %#v: %w", header.Linkname, err)
-					}
-					d.addFile(name, target.contents, target.isExecutable)
-				case tar.TypeSymlink:
-					if d.symlinks == nil {
-						d.symlinks = map[path.Component]path.Parser{}
-					}
-					d.symlinks[name] = path.UNIXFormat.NewParser(header.Linkname)
-				default:
-					panic("switch statement should have matched one of the cases above")
-				}
-			}
-		}
-	case model_analysis_pb.HttpArchiveContents_Key_ZIP:
-		zipReader, err := zip.NewReader(fileReader.FileOpenReadAt(ctx, httpFileContentsEntry), int64(httpFileContentsEntry.GetEndBytes()))
-		if err != nil {
-			return PatchedHTTPArchiveContentsValue[TMetadata]{}, err
-		}
-		var compressedSizeBytes uint64
-		for _, file := range zipReader.File {
-			compressedSizeBytes += file.CompressedSize64
-		}
-		progressReporter := newArchiveProgressReporter(e.ReportHTTPArchiveContentsProgress, compressedSizeBytes)
-		for _, file := range zipReader.File {
-			if strings.HasSuffix(file.Name, "/") {
-				if err := rootDirectory.resolveNewDirectory(file.Name); err != nil {
-					return PatchedHTTPArchiveContentsValue[TMetadata]{}, fmt.Errorf("invalid path %#v: %w", file.Name, err)
-				}
-			} else {
-				d, name, err := rootDirectory.resolveNewFile(file.Name)
-				if err != nil {
-					return PatchedHTTPArchiveContentsValue[TMetadata]{}, fmt.Errorf("invalid path %#v: %w", file.Name, err)
-				}
-
-				f, err := file.Open()
-				if err != nil {
-					return PatchedHTTPArchiveContentsValue[TMetadata]{}, err
-				}
-				contents, err := createFileMerkleTree(f)
-				f.Close()
-				if err != nil {
-					return PatchedHTTPArchiveContentsValue[TMetadata]{}, fmt.Errorf("failed to extract file %#v: %w", file.Name, err)
-				}
-				d.addFile(name, contents, true)
-			}
-			progressReporter.add(file.CompressedSize64)
-		}
-	default:
-		return PatchedHTTPArchiveContentsValue[TMetadata]{}, errors.New("unknown archive format")
+	rootDirectory, err := extractArchive(
+		key.Format,
+		fileReader.FileOpenRead(ctx, httpFileContentsEntry, 0),
+		fileReader.FileOpenReadAt(ctx, httpFileContentsEntry),
+		httpFileContentsEntry.GetEndBytes(),
+		/* renameFiles = */ nil,
+		createFileMerkleTree,
+		e.ReportHTTPArchiveContentsProgress,
+	)
+	if err != nil {
+		return PatchedHTTPArchiveContentsValue[TMetadata]{}, err
 	}
 
 	group, groupCtx := errgroup.WithContext(ctx)
@@ -457,7 +495,7 @@ func (*baseComputer[TReference, TMetadata]) ComputeHTTPArchiveContentsValue(ctx 
 			directoryCreationParameters,
 			&capturableArchiveDirectory[TReference, TMetadata]{
 				objectCapturer: e,
-				directory:      &rootDirectory,
+				directory:      rootDirectory,
 			},
 			model_filesystem.NewSimpleDirectoryMerkleTreeCapturer(e),
 			&createdRootDirectory,
