@@ -18,27 +18,45 @@ func (baseComputer[TReference, TMetadata]) ComputeUsedModuleExtensionValue(ctx c
 		return PatchedUsedModuleExtensionValue[TMetadata]{}, evaluation.ErrMissingDependency
 	}
 	extensions := usedModuleExtensions.Message.ModuleExtensions
-	if i := sort.Search(
+	getName := func(i int) (string, error) {
+		identifier, err := label.NewCanonicalStarlarkIdentifier(extensions[i].Identifier)
+		if err != nil {
+			return "", fmt.Errorf("invalid module extensions Starlark identifier %#v: %w", extensions[i].Identifier, err)
+		}
+		return identifier.ToModuleExtension().String(), nil
+	}
+	first := sort.Search(
 		len(extensions),
 		func(i int) bool {
-			identifier, err := label.NewCanonicalStarlarkIdentifier(extensions[i].Identifier)
-			return err == nil && identifier.ToModuleExtension().String() >= key.ModuleExtension
+			name, err := getName(i)
+			return err != nil || name >= key.ModuleExtension
 		},
-	); i < len(extensions) {
-		extension := extensions[i]
-		identifier, err := label.NewCanonicalStarlarkIdentifier(extension.Identifier)
+	)
+	patcher := model_core.NewReferenceMessagePatcher[TMetadata]()
+	var matchingExtensions []*model_analysis_pb.ModuleExtension
+	for i := first; i < len(extensions); i++ {
+		name, err := getName(i)
 		if err != nil {
-			return PatchedUsedModuleExtensionValue[TMetadata]{}, fmt.Errorf("invalid module extensions Starlark identifier %#v: %w", extension.Identifier, err)
+			return PatchedUsedModuleExtensionValue[TMetadata]{}, err
 		}
-		if identifier.ToModuleExtension().String() == key.ModuleExtension {
-			patchedExtension := model_core.Patch(e, model_core.Nested(usedModuleExtensions, extension))
-			return model_core.NewPatchedMessage(
-				&model_analysis_pb.UsedModuleExtension_Value{
-					ModuleExtension: patchedExtension.Message,
-				},
-				patchedExtension.Patcher,
-			), nil
+		if name != key.ModuleExtension {
+			break
 		}
+		patchedExtension := model_core.Patch(e, model_core.Nested(usedModuleExtensions, extensions[i]))
+		patcher.Merge(patchedExtension.Patcher)
+		matchingExtensions = append(matchingExtensions, patchedExtension.Message)
+	}
+	if len(matchingExtensions) > 0 {
+		return model_core.NewPatchedMessage(
+			&model_analysis_pb.UsedModuleExtension_Value{
+				ModuleExtensions: matchingExtensions,
+			},
+			patcher,
+		), nil
 	}
 	return PatchedUsedModuleExtensionValue[TMetadata]{}, errors.New("module extension not found")
 }
+
+// UsedModuleExtensionEnvironmentForTesting is used to generate mocks
+// for unit testing BaseComputer.
+type UsedModuleExtensionEnvironmentForTesting UsedModuleExtensionEnvironment[model_core.CreatedObjectTree, model_core.CreatedObjectTree]

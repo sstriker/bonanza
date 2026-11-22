@@ -2,7 +2,6 @@ package analysis
 
 import (
 	"context"
-	"fmt"
 	"maps"
 	"slices"
 	"strings"
@@ -84,7 +83,7 @@ type usedModuleExtensionExtractingModuleDotBazelHandler[TReference object.BasicR
 	moduleInstance        label.ModuleInstance
 	isRoot                bool
 	ignoreDevDependencies bool
-	usedModuleExtensions  map[label.ModuleExtension]*usedModuleExtension
+	usedModuleExtensions  map[label.CanonicalStarlarkIdentifier]*usedModuleExtension
 	valueEncodingOptions  *model_starlark.ValueEncodingOptions[TReference, TMetadata]
 }
 
@@ -121,31 +120,21 @@ func (h *usedModuleExtensionExtractingModuleDotBazelHandler[TReference, TMetadat
 		return nil, err
 	}
 	moduleExtensionIdentifier := canonicalExtensionBzlFile.AppendStarlarkIdentifier(extensionName)
-	moduleExtensionName := moduleExtensionIdentifier.ToModuleExtension()
-	moduleExtensionIdentifierStr := moduleExtensionIdentifier.String()
 
-	ume, ok := h.usedModuleExtensions[moduleExtensionName]
-	if ok {
-		// Safety belt: prevent a single module instance from
-		// declaring multiple module extensions with the same
-		// name. This would cause collisions when both of them
-		// declare repos with the same name.
-		if moduleExtensionIdentifierStr != ume.message.Identifier {
-			return nil, fmt.Errorf(
-				"module extension declarations %#v and %#v have the same name, meaning they would both declare repos with prefix %#v",
-				moduleExtensionIdentifierStr,
-				ume.message.Identifier,
-				moduleExtensionName.String(),
-			)
-		}
-	} else {
+	// Module extensions declared in separate .bzl files of the
+	// same module may have the same name. These are tracked
+	// separately, but share the same prefix for the names of
+	// repos they declare. ComputeModuleExtensionReposValue()
+	// evaluates them together.
+	ume, ok := h.usedModuleExtensions[moduleExtensionIdentifier]
+	if !ok {
 		ume = &usedModuleExtension{
 			message: model_analysis_pb.ModuleExtension{
-				Identifier: moduleExtensionIdentifierStr,
+				Identifier: moduleExtensionIdentifier.String(),
 			},
 			users: map[label.ModuleInstance]*moduleExtensionUser{},
 		}
-		h.usedModuleExtensions[moduleExtensionName] = ume
+		h.usedModuleExtensions[moduleExtensionIdentifier] = ume
 	}
 	if h.isRoot && !devDependency {
 		ume.message.RootModuleHasNonDevDependency = true
@@ -192,7 +181,7 @@ func (c *baseComputer[TReference, TMetadata]) ComputeUsedModuleExtensionsValue(c
 		labelResolver: newLabelResolver(e),
 		patcher:       model_core.NewReferenceMessagePatcher[TMetadata](),
 	}
-	usedModuleExtensions := map[label.ModuleExtension]*usedModuleExtension{}
+	usedModuleExtensions := map[label.CanonicalStarlarkIdentifier]*usedModuleExtension{}
 	isRoot := true
 	if err := c.visitModuleDotBazelFilesBreadthFirst(ctx, e, func(moduleInstance label.ModuleInstance, ignoreDevDependencies bool) dotbazel.ChildHandler {
 		h := &usedModuleExtensionExtractingModuleDotBazelHandler[TReference, TMetadata]{
@@ -222,7 +211,12 @@ func (c *baseComputer[TReference, TMetadata]) ComputeUsedModuleExtensionsValue(c
 	sortedModuleExtensions := make([]*model_analysis_pb.ModuleExtension, 0, len(usedModuleExtensions))
 	for _, name := range slices.SortedFunc(
 		maps.Keys(usedModuleExtensions),
-		func(a, b label.ModuleExtension) int { return strings.Compare(a.String(), b.String()) },
+		func(a, b label.CanonicalStarlarkIdentifier) int {
+			if cmp := strings.Compare(a.ToModuleExtension().String(), b.ToModuleExtension().String()); cmp != 0 {
+				return cmp
+			}
+			return strings.Compare(a.String(), b.String())
+		},
 	) {
 		sortedModuleExtensions = append(sortedModuleExtensions, &usedModuleExtensions[name].message)
 	}

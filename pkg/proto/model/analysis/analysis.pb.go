@@ -16485,10 +16485,10 @@ func (x *UsedModuleExtension_Key) GetModuleExtension() string {
 }
 
 type UsedModuleExtension_Value struct {
-	state           protoimpl.MessageState `protogen:"open.v1"`
-	ModuleExtension *ModuleExtension       `protobuf:"bytes,1,opt,name=module_extension,json=moduleExtension,proto3" json:"module_extension,omitempty"`
-	unknownFields   protoimpl.UnknownFields
-	sizeCache       protoimpl.SizeCache
+	state            protoimpl.MessageState `protogen:"open.v1"`
+	ModuleExtensions []*ModuleExtension     `protobuf:"bytes,1,rep,name=module_extensions,json=moduleExtensions,proto3" json:"module_extensions,omitempty"`
+	unknownFields    protoimpl.UnknownFields
+	sizeCache        protoimpl.SizeCache
 }
 
 func (x *UsedModuleExtension_Value) Reset() {
@@ -16521,9 +16521,9 @@ func (*UsedModuleExtension_Value) Descriptor() ([]byte, []int) {
 	return file_bonanza_build_pkg_proto_model_analysis_analysis_proto_rawDescGZIP(), []int{109, 1}
 }
 
-func (x *UsedModuleExtension_Value) GetModuleExtension() *ModuleExtension {
+func (x *UsedModuleExtension_Value) GetModuleExtensions() []*ModuleExtension {
 	if x != nil {
-		return x.ModuleExtension
+		return x.ModuleExtensions
 	}
 	return nil
 }
@@ -17927,13 +17927,13 @@ const file_bonanza_build_pkg_proto_model_analysis_analysis_proto_rawDesc = "" +
 	"\x04tags\x18\x02 \x03(\v2+.bonanza.model.analysis.ModuleExtension.TagR\x04tags\x1an\n" +
 	"\x03Tag\x12;\n" +
 	"\x05attrs\x18\x01 \x01(\v2%.bonanza.model.starlark.Struct.FieldsR\x05attrs\x12*\n" +
-	"\x11is_dev_dependency\x18\x02 \x01(\bR\x0fisDevDependency\"\xe2\x01\n" +
+	"\x11is_dev_dependency\x18\x02 \x01(\bR\x0fisDevDependency\"\xe4\x01\n" +
 	"\x13UsedModuleExtension\x1an\n" +
 	"\x03Key\x12)\n" +
 	"\x10module_extension\x18\x01 \x01(\tR\x0fmoduleExtension:<\xf2\xd7 8\n" +
-	"6Obtaining usage of module extension {module_extension}\x1a[\n" +
-	"\x05Value\x12R\n" +
-	"\x10module_extension\x18\x01 \x01(\v2'.bonanza.model.analysis.ModuleExtensionR\x0fmoduleExtension\"\xa2\x01\n" +
+	"6Obtaining usage of module extension {module_extension}\x1a]\n" +
+	"\x05Value\x12T\n" +
+	"\x11module_extensions\x18\x01 \x03(\v2'.bonanza.model.analysis.ModuleExtensionR\x10moduleExtensions\"\xa2\x01\n" +
 	"\x14UsedModuleExtensions\x1a+\n" +
 	"\x03Key:$\xf2\xd7  \n" +
 	"\x1eListing used module extensions\x1a]\n" +
@@ -18601,7 +18601,7 @@ var file_bonanza_build_pkg_proto_model_analysis_analysis_proto_depIdxs = []int32
 	345, // 220: bonanza.model.analysis.ModuleExtension.User.tag_classes:type_name -> bonanza.model.analysis.ModuleExtension.TagClass
 	346, // 221: bonanza.model.analysis.ModuleExtension.TagClass.tags:type_name -> bonanza.model.analysis.ModuleExtension.Tag
 	391, // 222: bonanza.model.analysis.ModuleExtension.Tag.attrs:type_name -> bonanza.model.starlark.Struct.Fields
-	113, // 223: bonanza.model.analysis.UsedModuleExtension.Value.module_extension:type_name -> bonanza.model.analysis.ModuleExtension
+	113, // 223: bonanza.model.analysis.UsedModuleExtension.Value.module_extensions:type_name -> bonanza.model.analysis.ModuleExtension
 	113, // 224: bonanza.model.analysis.UsedModuleExtensions.Value.module_extensions:type_name -> bonanza.model.analysis.ModuleExtension
 	357, // 225: bonanza.model.analysis.UserDefinedTransition.Key.input_configuration_reference:type_name -> bonanza.model.core.DecodableReference
 	376, // 226: bonanza.model.analysis.UserDefinedTransition.Value.transition_depends_on_attrs:type_name -> google.protobuf.Empty

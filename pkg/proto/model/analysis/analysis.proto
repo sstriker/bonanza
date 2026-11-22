@@ -3352,7 +3352,12 @@ message UsedModuleExtension {
   }
 
   message Value {
-    ModuleExtension module_extension = 1;
+    // The module extensions that have the requested name, sorted by
+    // identifier. Multiple module extensions have the same name if
+    // a module declares them in separate .bzl files using the same
+    // Starlark identifier. These module extensions are evaluated
+    // together, and must not declare repos with the same name.
+    repeated ModuleExtension module_extensions = 1;
   }
 }
 
@@ -3367,7 +3372,7 @@ message UsedModuleExtensions {
     // List of module extensions that has one or more users. Module
     // extensions are sorted by module extension name, which can be
     // derived from the canonical Starlark identifier of the
-    // module_extension() object.
+    // module_extension() object, and subsequently by identifier.
     repeated ModuleExtension module_extensions = 1;
   }
 }

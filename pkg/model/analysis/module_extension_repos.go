@@ -242,237 +242,254 @@ func (c *baseComputer[TReference, TMetadata]) ComputeModuleExtensionReposValue(c
 		if !usedModuleExtensionValue.IsSet() {
 			return PatchedModuleExtensionReposValue[TMetadata]{}, evaluation.ErrMissingDependency
 		}
-		usedModuleExtension := usedModuleExtensionValue.Message.ModuleExtension
-
-		moduleExtensionIdentifierStr := usedModuleExtension.GetIdentifier()
-		moduleExtensionIdentifier, err := label.NewCanonicalStarlarkIdentifier(moduleExtensionIdentifierStr)
-		if err != nil {
-			return PatchedModuleExtensionReposValue[TMetadata]{}, fmt.Errorf("invalid module extension identifier %#v: %w", moduleExtensionIdentifierStr, err)
-		}
-		moduleExtensionDefinitionValue := e.GetCompiledBzlFileGlobalValue(&model_analysis_pb.CompiledBzlFileGlobal_Key{
-			Identifier: moduleExtensionIdentifier.String(),
-		})
-		if !moduleExtensionDefinitionValue.IsSet() {
-			return PatchedModuleExtensionReposValue[TMetadata]{}, evaluation.ErrMissingDependency
-		}
-		v, ok := moduleExtensionDefinitionValue.Message.Global.GetKind().(*model_starlark_pb.Value_ModuleExtension)
-		if !ok {
-			return PatchedModuleExtensionReposValue[TMetadata]{}, fmt.Errorf("%#v is not a module extension", moduleExtensionIdentifier.String())
-		}
-		moduleExtensionDefinition := v.ModuleExtension
-
-		thread, err := c.newStarlarkThread(ctx, e, starlarkValueEncoders, allBuiltinsModulesNames.Message.BuiltinsModuleNames)
-		if err != nil {
-			return PatchedModuleExtensionReposValue[TMetadata]{}, err
-		}
-
-		// Decode tags declared in all MODULE.bazel files belonging to
-		// this module extension.
-		moduleExtensionUsers := usedModuleExtension.GetUsers()
-		modules := make([]eval.Value, 0, len(moduleExtensionUsers))
-		listReader := valueReaders.List
-		tagClassAttrTypes := make([][]model_starlark.AttrType[TReference, TMetadata], len(moduleExtensionDefinition.TagClasses))
-		tagClassAttrDefaults := make([][]eval.Value, len(moduleExtensionDefinition.TagClasses))
-		for _, user := range moduleExtensionUsers {
-			moduleInstance, err := label.NewModuleInstance(user.ModuleInstance)
-			if err != nil {
-				return PatchedModuleExtensionReposValue[TMetadata]{}, fmt.Errorf("invalid module instance %#v: %w", user.ModuleInstance, err)
-			}
-			versionStr := ""
-			if v, ok := moduleInstance.GetModuleVersion(); ok {
-				versionStr = v.String()
-			}
-
-			usedTagClasses := user.TagClasses
-			tagClasses := map[string]any{}
-			for tagClassIndex, tagClass := range moduleExtensionDefinition.TagClasses {
-				tagClassDefinition := tagClass.TagClass
-				tagClassAttrs := tagClassDefinition.GetAttrs()
-
-				var tags []eval.Value
-				if len(usedTagClasses) > 0 && usedTagClasses[0].Name == tagClass.Name {
-					declaredTags := usedTagClasses[0].Tags
-					tags = make([]eval.Value, 0, len(declaredTags))
-					for _, declaredTag := range declaredTags {
-						var errIter error
-						declaredAttrs := maps.Collect(
-							model_starlark.AllStructFields(
-								ctx,
-								listReader,
-								model_core.Nested(usedModuleExtensionValue, declaredTag.Attrs),
-								&errIter,
-							),
-						)
-						if errIter != nil {
-							return PatchedModuleExtensionReposValue[TMetadata]{}, errIter
-						}
-
-						attrs := make([]eval.Value, 0, len(tagClassAttrs))
-						for attrIndex, attr := range tagClassAttrs {
-							if declaredValue, ok := declaredAttrs[attr.Name]; ok {
-								value, err := model_starlark.DecodeValue[TReference, TMetadata](
-									thread, declaredValue,
-									/* currentIdentifier = */ nil,
-								)
-								if err != nil {
-									return PatchedModuleExtensionReposValue[TMetadata]{}, fmt.Errorf("failed to decode value of attribute %#v of tag class %#v declared by module instance %#v", attr.Name, tagClass.Name, moduleInstance.String())
-								}
-
-								if len(tagClassAttrTypes[tagClassIndex]) != len(tagClassAttrs) {
-									tagClassAttrTypes[tagClassIndex] = make([]model_starlark.AttrType[TReference, TMetadata], len(tagClassAttrs))
-								}
-								attrType := &tagClassAttrTypes[tagClassIndex][attrIndex]
-								if *attrType == nil {
-									// First time we see this tag class be
-									// invoked with a value for this
-									// attribute. Determine the attribute
-									// type, so that the provided value can be
-									// canonicalized.
-									*attrType, err = model_starlark.DecodeAttrType[TReference, TMetadata](model_core.Nested(moduleExtensionDefinitionValue, attr.Attr))
-									if err != nil {
-										return PatchedModuleExtensionReposValue[TMetadata]{}, fmt.Errorf("failed to decode type of attribute %#v of tag class %#v", attr.Name, tagClass.Name)
-									}
-								}
-
-								canonicalValue, err := (*attrType).GetCanonicalizer(
-									moduleInstance.GetBareCanonicalRepo().GetRootPackage(),
-								).Canonicalize(thread, value)
-								if err != nil {
-									return PatchedModuleExtensionReposValue[TMetadata]{}, fmt.Errorf("failed to canonicalize value of attribute %#v of tag class %#v declared by module instance %#v: %w", attr.Name, tagClass.Name, moduleInstance.String(), err)
-								}
-								attrs = append(attrs, canonicalValue)
-
-								delete(declaredAttrs, attr.Name)
-							} else if encodedDefaultValue := attr.Attr.GetDefault(); encodedDefaultValue != nil {
-								// Tag didn't provide the attribute.
-								// Use the default value.
-								if len(tagClassAttrDefaults[tagClassIndex]) != len(tagClassAttrs) {
-									tagClassAttrDefaults[tagClassIndex] = make([]eval.Value, len(tagClassAttrs))
-								}
-								defaultValue := &tagClassAttrDefaults[tagClassIndex][attrIndex]
-								if *defaultValue == nil {
-									// First time we see this tag class be
-									// invoked without a value for this
-									// attribute. Decode the default value.
-									*defaultValue, err = model_starlark.DecodeValue[TReference, TMetadata](
-										thread, model_core.Nested(moduleExtensionDefinitionValue, encodedDefaultValue),
-										/* currentIdentifier = */ nil,
-									)
-									if err != nil {
-										return PatchedModuleExtensionReposValue[TMetadata]{}, fmt.Errorf("failed to decode default value of attribute %#v of tag class %#v", attr.Name, tagClass.Name)
-									}
-								}
-								attrs = append(attrs, *defaultValue)
-							} else {
-								return PatchedModuleExtensionReposValue[TMetadata]{}, fmt.Errorf("module instance %#v declares tag of class %#v with missing attribute %#v", moduleInstance.String(), tagClass.Name, attr.Name)
-							}
-						}
-						if len(declaredAttrs) > 0 {
-							return PatchedModuleExtensionReposValue[TMetadata]{}, fmt.Errorf(
-								"module instance %#v declares tag of class %#v with unknown attribute %#v",
-								moduleInstance.String(),
-								tagClass.Name,
-								slices.Min(slices.Collect(maps.Keys(declaredAttrs))),
-							)
-						}
-
-						tags = append(tags, bazelModuleTag{
-							tagClass:        tagClassDefinition,
-							isDevDependency: declaredTag.IsDevDependency,
-							attrs:           attrs,
-						})
-					}
-
-					usedTagClasses = usedTagClasses[1:]
-				}
-				tagClasses[tagClass.Name] = eval.NewImmutableList(tags)
-			}
-			if len(usedTagClasses) > 0 {
-				return PatchedModuleExtensionReposValue[TMetadata]{}, fmt.Errorf("module instance %#v uses unknown tag class %#v", moduleInstance.String(), usedTagClasses[0].Name)
-			}
-
-			modules = append(modules, model_starlark.NewStructFromDict[TReference, TMetadata](nil, map[string]any{
-				"is_root": eval.Bool(user.IsRoot),
-				"name":    eval.String(moduleInstance.GetModule().String()),
-				"tags":    model_starlark.NewStructFromDict[TReference, TMetadata](nil, tagClasses),
-				"version": eval.String(versionStr),
-			}))
-		}
-
-		// Call into the implementation function to obtain a set of
-		// repos declared by this module extension.
-		thread.SetLocal(model_starlark.CanonicalPackageKey, moduleExtension.GetModuleInstance().GetBareCanonicalRepo().GetRootPackage())
-		thread.SetLocal(model_starlark.ValueEncodingOptionsKey, valueEncodingOptionsFactory.newValueEncodingOptions(ctx, nil))
-
-		repoRegistrar := model_starlark.NewRepoRegistrar[TMetadata]()
-		thread.SetLocal(model_starlark.RepoRegistrarKey, repoRegistrar)
-
+		// Multiple module extensions may have the same name.
+		// Evaluate all of them, and merge the repos they declare.
+		// The identifier generator is shared, so that values
+		// created by each of them remain distinct.
 		identifierGenerator, err := c.getReferenceEqualIdentifierGenerator(model_core.NewSimpleMessage[TReference](proto.Message(key)))
 		if err != nil {
 			return PatchedModuleExtensionReposValue[TMetadata]{}, err
 		}
-		thread.SetLocal(model_starlark.ReferenceEqualIdentifierGeneratorKey, identifierGenerator)
+		repos = map[string]model_core.PatchedMessage[*model_starlark_pb.Repo, TMetadata]{}
+		repoDeclarers := map[string]string{}
+		for _, usedModuleExtension := range usedModuleExtensionValue.Message.ModuleExtensions {
 
-		moduleContext, err := c.newModuleOrRepositoryContext(ctx, e, []path.Component{
-			path.MustNewComponent("modextwd"),
-			path.MustNewComponent(moduleExtension.String()),
-		})
-		if err != nil {
-			return PatchedModuleExtensionReposValue[TMetadata]{}, err
-		}
-		defer moduleContext.release()
+			moduleExtensionIdentifierStr := usedModuleExtension.GetIdentifier()
+			moduleExtensionIdentifier, err := label.NewCanonicalStarlarkIdentifier(moduleExtensionIdentifierStr)
+			if err != nil {
+				return PatchedModuleExtensionReposValue[TMetadata]{}, fmt.Errorf("invalid module extension identifier %#v: %w", moduleExtensionIdentifierStr, err)
+			}
+			moduleExtensionDefinitionValue := e.GetCompiledBzlFileGlobalValue(&model_analysis_pb.CompiledBzlFileGlobal_Key{
+				Identifier: moduleExtensionIdentifier.String(),
+			})
+			if !moduleExtensionDefinitionValue.IsSet() {
+				return PatchedModuleExtensionReposValue[TMetadata]{}, evaluation.ErrMissingDependency
+			}
+			v, ok := moduleExtensionDefinitionValue.Message.Global.GetKind().(*model_starlark_pb.Value_ModuleExtension)
+			if !ok {
+				return PatchedModuleExtensionReposValue[TMetadata]{}, fmt.Errorf("%#v is not a module extension", moduleExtensionIdentifier.String())
+			}
+			moduleExtensionDefinition := v.ModuleExtension
 
-		repositoryOS, err := newRepositoryOS[TReference, TMetadata](thread, repoPlatform.Message)
-		if err != nil {
-			return PatchedModuleExtensionReposValue[TMetadata]{}, err
-		}
-		moduleCtx := model_starlark.NewStructFromDict[TReference, TMetadata](nil, map[string]any{
-			// Fields shared with repository_ctx.
-			"download":                           eval.NewBuiltin("module_ctx.download", moduleContext.doDownload),
-			"download_and_extract":               eval.NewBuiltin("module_ctx.download_and_extract", moduleContext.doDownloadAndExtract),
-			"execute":                            eval.NewBuiltin("module_ctx.execute", moduleContext.doExecute),
-			"extract":                            eval.NewBuiltin("module_ctx.extract", moduleContext.doExtract),
-			"file":                               eval.NewBuiltin("module_ctx.file", moduleContext.doFile),
-			"getenv":                             eval.NewBuiltin("module_ctx.getenv", moduleContext.doGetenv),
-			"os":                                 repositoryOS,
-			"path":                               eval.NewBuiltin("module_ctx.path", moduleContext.doPath),
-			"read":                               eval.NewBuiltin("module_ctx.read", moduleContext.doRead),
-			"report_progress":                    eval.NewBuiltin("module_ctx.report_progress", moduleContext.doReportProgress),
-			"root_module_has_non_dev_dependency": eval.Bool(usedModuleExtension.RootModuleHasNonDevDependency),
-			"watch":                              eval.NewBuiltin("module_ctx.watch", moduleContext.doWatch),
-			"which":                              eval.NewBuiltin("module_ctx.which", moduleContext.doWhich),
+			thread, err := c.newStarlarkThread(ctx, e, starlarkValueEncoders, allBuiltinsModulesNames.Message.BuiltinsModuleNames)
+			if err != nil {
+				return PatchedModuleExtensionReposValue[TMetadata]{}, err
+			}
 
-			// Fields specific to module_ctx.
-			"extension_metadata": eval.NewBuiltin(
-				"module_ctx.extension_metadata",
-				func(thread *eval.Thread, b *eval.Builtin, args eval.Args) (eval.Value, error) {
-					// TODO: Properly implement this function.
-					return eval.None, nil
-				},
-			),
-			"is_dev_dependency": eval.NewBuiltin(
-				"module_ctx.is_dev_dependency",
-				func(thread *eval.Thread, b *eval.Builtin, args eval.Args) (eval.Value, error) {
-					var tag bazelModuleTag
-					if err := eval.UnpackArgs(
-						thread, b.Name(), args,
-						"tag", unpack.Bind(&tag, unpack.Type[bazelModuleTag]("bazel_module_tag")),
-					); err != nil {
-						return nil, err
+			// Decode tags declared in all MODULE.bazel files belonging to
+			// this module extension.
+			moduleExtensionUsers := usedModuleExtension.GetUsers()
+			modules := make([]eval.Value, 0, len(moduleExtensionUsers))
+			listReader := valueReaders.List
+			tagClassAttrTypes := make([][]model_starlark.AttrType[TReference, TMetadata], len(moduleExtensionDefinition.TagClasses))
+			tagClassAttrDefaults := make([][]eval.Value, len(moduleExtensionDefinition.TagClasses))
+			for _, user := range moduleExtensionUsers {
+				moduleInstance, err := label.NewModuleInstance(user.ModuleInstance)
+				if err != nil {
+					return PatchedModuleExtensionReposValue[TMetadata]{}, fmt.Errorf("invalid module instance %#v: %w", user.ModuleInstance, err)
+				}
+				versionStr := ""
+				if v, ok := moduleInstance.GetModuleVersion(); ok {
+					versionStr = v.String()
+				}
+
+				usedTagClasses := user.TagClasses
+				tagClasses := map[string]any{}
+				for tagClassIndex, tagClass := range moduleExtensionDefinition.TagClasses {
+					tagClassDefinition := tagClass.TagClass
+					tagClassAttrs := tagClassDefinition.GetAttrs()
+
+					var tags []eval.Value
+					if len(usedTagClasses) > 0 && usedTagClasses[0].Name == tagClass.Name {
+						declaredTags := usedTagClasses[0].Tags
+						tags = make([]eval.Value, 0, len(declaredTags))
+						for _, declaredTag := range declaredTags {
+							var errIter error
+							declaredAttrs := maps.Collect(
+								model_starlark.AllStructFields(
+									ctx,
+									listReader,
+									model_core.Nested(usedModuleExtensionValue, declaredTag.Attrs),
+									&errIter,
+								),
+							)
+							if errIter != nil {
+								return PatchedModuleExtensionReposValue[TMetadata]{}, errIter
+							}
+
+							attrs := make([]eval.Value, 0, len(tagClassAttrs))
+							for attrIndex, attr := range tagClassAttrs {
+								if declaredValue, ok := declaredAttrs[attr.Name]; ok {
+									value, err := model_starlark.DecodeValue[TReference, TMetadata](
+										thread, declaredValue,
+										/* currentIdentifier = */ nil,
+									)
+									if err != nil {
+										return PatchedModuleExtensionReposValue[TMetadata]{}, fmt.Errorf("failed to decode value of attribute %#v of tag class %#v declared by module instance %#v", attr.Name, tagClass.Name, moduleInstance.String())
+									}
+
+									if len(tagClassAttrTypes[tagClassIndex]) != len(tagClassAttrs) {
+										tagClassAttrTypes[tagClassIndex] = make([]model_starlark.AttrType[TReference, TMetadata], len(tagClassAttrs))
+									}
+									attrType := &tagClassAttrTypes[tagClassIndex][attrIndex]
+									if *attrType == nil {
+										// First time we see this tag class be
+										// invoked with a value for this
+										// attribute. Determine the attribute
+										// type, so that the provided value can be
+										// canonicalized.
+										*attrType, err = model_starlark.DecodeAttrType[TReference, TMetadata](model_core.Nested(moduleExtensionDefinitionValue, attr.Attr))
+										if err != nil {
+											return PatchedModuleExtensionReposValue[TMetadata]{}, fmt.Errorf("failed to decode type of attribute %#v of tag class %#v", attr.Name, tagClass.Name)
+										}
+									}
+
+									canonicalValue, err := (*attrType).GetCanonicalizer(
+										moduleInstance.GetBareCanonicalRepo().GetRootPackage(),
+									).Canonicalize(thread, value)
+									if err != nil {
+										return PatchedModuleExtensionReposValue[TMetadata]{}, fmt.Errorf("failed to canonicalize value of attribute %#v of tag class %#v declared by module instance %#v: %w", attr.Name, tagClass.Name, moduleInstance.String(), err)
+									}
+									attrs = append(attrs, canonicalValue)
+
+									delete(declaredAttrs, attr.Name)
+								} else if encodedDefaultValue := attr.Attr.GetDefault(); encodedDefaultValue != nil {
+									// Tag didn't provide the attribute.
+									// Use the default value.
+									if len(tagClassAttrDefaults[tagClassIndex]) != len(tagClassAttrs) {
+										tagClassAttrDefaults[tagClassIndex] = make([]eval.Value, len(tagClassAttrs))
+									}
+									defaultValue := &tagClassAttrDefaults[tagClassIndex][attrIndex]
+									if *defaultValue == nil {
+										// First time we see this tag class be
+										// invoked without a value for this
+										// attribute. Decode the default value.
+										*defaultValue, err = model_starlark.DecodeValue[TReference, TMetadata](
+											thread, model_core.Nested(moduleExtensionDefinitionValue, encodedDefaultValue),
+											/* currentIdentifier = */ nil,
+										)
+										if err != nil {
+											return PatchedModuleExtensionReposValue[TMetadata]{}, fmt.Errorf("failed to decode default value of attribute %#v of tag class %#v", attr.Name, tagClass.Name)
+										}
+									}
+									attrs = append(attrs, *defaultValue)
+								} else {
+									return PatchedModuleExtensionReposValue[TMetadata]{}, fmt.Errorf("module instance %#v declares tag of class %#v with missing attribute %#v", moduleInstance.String(), tagClass.Name, attr.Name)
+								}
+							}
+							if len(declaredAttrs) > 0 {
+								return PatchedModuleExtensionReposValue[TMetadata]{}, fmt.Errorf(
+									"module instance %#v declares tag of class %#v with unknown attribute %#v",
+									moduleInstance.String(),
+									tagClass.Name,
+									slices.Min(slices.Collect(maps.Keys(declaredAttrs))),
+								)
+							}
+
+							tags = append(tags, bazelModuleTag{
+								tagClass:        tagClassDefinition,
+								isDevDependency: declaredTag.IsDevDependency,
+								attrs:           attrs,
+							})
+						}
+
+						usedTagClasses = usedTagClasses[1:]
 					}
-					return eval.Bool(tag.isDevDependency), nil
-				},
-			),
-			"modules": eval.NewImmutableList(modules),
-		})
+					tagClasses[tagClass.Name] = eval.NewImmutableList(tags)
+				}
+				if len(usedTagClasses) > 0 {
+					return PatchedModuleExtensionReposValue[TMetadata]{}, fmt.Errorf("module instance %#v uses unknown tag class %#v", moduleInstance.String(), usedTagClasses[0].Name)
+				}
 
-		// TODO: Capture extension_metadata.
-		_, err = eval.Call(thread, model_starlark.DecodeFunction[TReference, TMetadata](model_core.Nested(moduleExtensionDefinitionValue, moduleExtensionDefinition.Implementation)), eval.Args{Positional: /* args = */ []eval.Value{moduleCtx}, Named: /* kwargs = */ nil})
-		if err != nil {
-			return PatchedModuleExtensionReposValue[TMetadata]{}, formatStarlarkError(err)
+				modules = append(modules, model_starlark.NewStructFromDict[TReference, TMetadata](nil, map[string]any{
+					"is_root": eval.Bool(user.IsRoot),
+					"name":    eval.String(moduleInstance.GetModule().String()),
+					"tags":    model_starlark.NewStructFromDict[TReference, TMetadata](nil, tagClasses),
+					"version": eval.String(versionStr),
+				}))
+			}
+
+			// Call into the implementation function to obtain a set of
+			// repos declared by this module extension.
+			thread.SetLocal(model_starlark.CanonicalPackageKey, moduleExtension.GetModuleInstance().GetBareCanonicalRepo().GetRootPackage())
+			thread.SetLocal(model_starlark.ValueEncodingOptionsKey, valueEncodingOptionsFactory.newValueEncodingOptions(ctx, nil))
+
+			repoRegistrar := model_starlark.NewRepoRegistrar[TMetadata]()
+			thread.SetLocal(model_starlark.RepoRegistrarKey, repoRegistrar)
+
+			thread.SetLocal(model_starlark.ReferenceEqualIdentifierGeneratorKey, identifierGenerator)
+
+			moduleContext, err := c.newModuleOrRepositoryContext(ctx, e, []path.Component{
+				path.MustNewComponent("modextwd"),
+				path.MustNewComponent(moduleExtension.String()),
+			})
+			if err != nil {
+				return PatchedModuleExtensionReposValue[TMetadata]{}, err
+			}
+			defer moduleContext.release()
+
+			repositoryOS, err := newRepositoryOS[TReference, TMetadata](thread, repoPlatform.Message)
+			if err != nil {
+				return PatchedModuleExtensionReposValue[TMetadata]{}, err
+			}
+			moduleCtx := model_starlark.NewStructFromDict[TReference, TMetadata](nil, map[string]any{
+				// Fields shared with repository_ctx.
+				"download":                           eval.NewBuiltin("module_ctx.download", moduleContext.doDownload),
+				"download_and_extract":               eval.NewBuiltin("module_ctx.download_and_extract", moduleContext.doDownloadAndExtract),
+				"execute":                            eval.NewBuiltin("module_ctx.execute", moduleContext.doExecute),
+				"extract":                            eval.NewBuiltin("module_ctx.extract", moduleContext.doExtract),
+				"file":                               eval.NewBuiltin("module_ctx.file", moduleContext.doFile),
+				"getenv":                             eval.NewBuiltin("module_ctx.getenv", moduleContext.doGetenv),
+				"os":                                 repositoryOS,
+				"path":                               eval.NewBuiltin("module_ctx.path", moduleContext.doPath),
+				"read":                               eval.NewBuiltin("module_ctx.read", moduleContext.doRead),
+				"report_progress":                    eval.NewBuiltin("module_ctx.report_progress", moduleContext.doReportProgress),
+				"root_module_has_non_dev_dependency": eval.Bool(usedModuleExtension.RootModuleHasNonDevDependency),
+				"watch":                              eval.NewBuiltin("module_ctx.watch", moduleContext.doWatch),
+				"which":                              eval.NewBuiltin("module_ctx.which", moduleContext.doWhich),
+
+				// Fields specific to module_ctx.
+				"extension_metadata": eval.NewBuiltin(
+					"module_ctx.extension_metadata",
+					func(thread *eval.Thread, b *eval.Builtin, args eval.Args) (eval.Value, error) {
+						// TODO: Properly implement this function.
+						return eval.None, nil
+					},
+				),
+				"is_dev_dependency": eval.NewBuiltin(
+					"module_ctx.is_dev_dependency",
+					func(thread *eval.Thread, b *eval.Builtin, args eval.Args) (eval.Value, error) {
+						var tag bazelModuleTag
+						if err := eval.UnpackArgs(
+							thread, b.Name(), args,
+							"tag", unpack.Bind(&tag, unpack.Type[bazelModuleTag]("bazel_module_tag")),
+						); err != nil {
+							return nil, err
+						}
+						return eval.Bool(tag.isDevDependency), nil
+					},
+				),
+				"modules": eval.NewImmutableList(modules),
+			})
+
+			// TODO: Capture extension_metadata.
+			_, err = eval.Call(thread, model_starlark.DecodeFunction[TReference, TMetadata](model_core.Nested(moduleExtensionDefinitionValue, moduleExtensionDefinition.Implementation)), eval.Args{Positional: /* args = */ []eval.Value{moduleCtx}, Named: /* kwargs = */ nil})
+			if err != nil {
+				return PatchedModuleExtensionReposValue[TMetadata]{}, formatStarlarkError(err)
+			}
+			for name, repo := range repoRegistrar.GetRepos() {
+				if otherIdentifier, ok := repoDeclarers[name]; ok {
+					return PatchedModuleExtensionReposValue[TMetadata]{}, fmt.Errorf(
+						"module extensions %#v and %#v both declare repo %#v, while they have the same name",
+						otherIdentifier,
+						usedModuleExtension.GetIdentifier(),
+						name,
+					)
+				}
+				repos[name] = repo
+				repoDeclarers[name] = usedModuleExtension.GetIdentifier()
+			}
 		}
-
-		repos = repoRegistrar.GetRepos()
 	}
 
 	for _, name := range slices.Sorted(maps.Keys(repos)) {
