@@ -35,7 +35,7 @@ repeatable_string_list_flag = rule(
 
 def _string_impl(ctx):
     if ctx.attr.values and ctx.build_setting_value not in ctx.attr.values:
-        fail("value '%s' is not one of %s" % ctx.build_setting_value, ctx.attr.values)
+        fail("value '%s' is not one of %s" % (ctx.build_setting_value, ctx.attr.values))
     return [BuildSettingInfo(value = ctx.build_setting_value)]
 
 string_flag = rule(
