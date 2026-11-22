@@ -80,6 +80,13 @@ for mv in $mods; do
   [ -z "$url" ] && continue
 
   dest="$DEPS/$m"
+  # A clone of another version (e.g. left behind before a dependency
+  # upgrade) must not be reused: its sources would not match the
+  # registry MODULE.bazel overlaid below.
+  if [ -d "$dest" ] && [ "$(cat "$dest/.bcr-version" 2>/dev/null)" != "$v" ]; then
+    log "discarding stale clone of $m (want $v)"
+    rm -rf "$dest"
+  fi
   if [ ! -d "$dest" ]; then
     # Fetchable via the mirror or directly? Then no override is needed.
     code=$(curl -s -o /dev/null -w "%{http_code}" -r 0-0 --max-time 20 "https://storage.googleapis.com/bazel-mirror/${url#https://}")
@@ -127,6 +134,7 @@ for mv in $mods; do
       curl -sf "$BCR/modules/$m/$v/patches/$p" | patch -p"$strip" -d "$dest" -s --no-backup-if-mismatch ||
         log "WARNING: $m: patch $p did not apply cleanly"
     done
+    echo "$v" > "$dest/.bcr-version"
   fi
 
   # The module root within the clone: release archives are usually the
@@ -299,6 +307,10 @@ EOF
 )
 bbs="$DEPS/com_github_buildbarn_bb_storage"
 if [ -n "$bbs_commit" ]; then
+  if [ -d "$bbs" ] && [ "$(git -C "$bbs" rev-parse HEAD 2>/dev/null)" != "$bbs_commit" ]; then
+    log "discarding stale bb-storage clone (want $bbs_commit)"
+    rm -rf "$bbs"
+  fi
   if [ ! -d "$bbs" ]; then
     log "cloning bb-storage@$bbs_commit"
     git init -q "$bbs" &&
