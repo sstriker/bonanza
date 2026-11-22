@@ -430,13 +430,6 @@ bool_flag(
     visibility = ["//visibility:public"],
 )
 
-# TODO: Should be a string_keyed_label_dict_flag().
-string_list_flag(
-    name = "experimental_bytecode_optimizers",
-    build_setting_default = [],
-    visibility = ["//visibility:public"],
-)
-
 bool_flag(
     name = "experimental_cc_implementation_deps",
     build_setting_default = True,
@@ -499,12 +492,6 @@ bool_flag(
 
 bool_flag(
     name = "experimental_exclude_defines_from_exec_config",
-    build_setting_default = False,
-    visibility = ["//visibility:public"],
-)
-
-bool_flag(
-    name = "experimental_exclude_starlark_flags_from_exec_config",
     build_setting_default = False,
     visibility = ["//visibility:public"],
 )
@@ -595,12 +582,6 @@ bool_flag(
 
 bool_flag(
     name = "experimental_inmemory_jdeps_files",
-    build_setting_default = True,
-    visibility = ["//visibility:public"],
-)
-
-bool_flag(
-    name = "experimental_inprocess_symlink_creation",
     build_setting_default = True,
     visibility = ["//visibility:public"],
 )
@@ -1097,12 +1078,6 @@ bool_flag(
 
 bool_flag(
     name = "incompatible_check_testonly_for_output_files",
-    build_setting_default = False,
-    visibility = ["//visibility:public"],
-)
-
-bool_flag(
-    name = "incompatible_check_visibility_for_toolchains",
     build_setting_default = False,
     visibility = ["//visibility:public"],
 )
