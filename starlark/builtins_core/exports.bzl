@@ -1567,12 +1567,6 @@ def builtins_internal_java_common_internal_do_not_use_incompatible_disable_non_e
 def builtins_internal_java_common_internal_do_not_use_target_kind():
     return "TODO"
 
-def builtins_internal_java_common_internal_do_not_use_tokenize_javacopts():
-    return "TODO"
-
-def builtins_internal_java_common_internal_do_not_use_wrap_java_info():
-    return "TODO"
-
 def builtins_internal_py_builtins_are_action_listeners_enabled(ctx):
     return False
 
@@ -1706,8 +1700,6 @@ exported_toplevels["_builtins"] = struct(
             get_runtime_classpath_for_archive = builtins_internal_java_common_internal_do_not_use_get_runtime_classpath_for_archive,
             incompatible_disable_non_executable_java_binary = builtins_internal_java_common_internal_do_not_use_incompatible_disable_non_executable_java_binary,
             target_kind = builtins_internal_java_common_internal_do_not_use_target_kind,
-            tokenize_javacopts = builtins_internal_java_common_internal_do_not_use_tokenize_javacopts,
-            wrap_java_info = builtins_internal_java_common_internal_do_not_use_wrap_java_info,
         ),
         py_builtins = struct(
             are_action_listeners_enabled = builtins_internal_py_builtins_are_action_listeners_enabled,
