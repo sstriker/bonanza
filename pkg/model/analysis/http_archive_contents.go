@@ -3,6 +3,7 @@ package analysis
 import (
 	"archive/tar"
 	"archive/zip"
+	"compress/bzip2"
 	"compress/gzip"
 	"context"
 	"errors"
@@ -22,6 +23,7 @@ import (
 	"github.com/buildbarn/bb-storage/pkg/filesystem"
 	"github.com/buildbarn/bb-storage/pkg/filesystem/path"
 	"github.com/buildbarn/bb-storage/pkg/util"
+	"github.com/klauspost/compress/zstd"
 	"github.com/ulikunitz/xz"
 
 	"golang.org/x/sync/errgroup"
@@ -322,7 +324,11 @@ func (*baseComputer[TReference, TMetadata]) ComputeHTTPArchiveContentsValue(ctx 
 	var rootDirectory archiveDirectory[TReference]
 
 	switch key.Format {
-	case model_analysis_pb.HttpArchiveContents_Key_TAR_GZ, model_analysis_pb.HttpArchiveContents_Key_TAR_XZ:
+	case model_analysis_pb.HttpArchiveContents_Key_TAR,
+		model_analysis_pb.HttpArchiveContents_Key_TAR_BZ2,
+		model_analysis_pb.HttpArchiveContents_Key_TAR_GZ,
+		model_analysis_pb.HttpArchiveContents_Key_TAR_XZ,
+		model_analysis_pb.HttpArchiveContents_Key_TAR_ZST:
 		compressedReader := progressReportingReader{
 			r: fileReader.FileOpenRead(ctx, httpFileContentsEntry, 0),
 			pr: newArchiveProgressReporter(
@@ -332,6 +338,10 @@ func (*baseComputer[TReference, TMetadata]) ComputeHTTPArchiveContentsValue(ctx 
 		}
 		var decompressedReader io.Reader
 		switch key.Format {
+		case model_analysis_pb.HttpArchiveContents_Key_TAR:
+			decompressedReader = compressedReader
+		case model_analysis_pb.HttpArchiveContents_Key_TAR_BZ2:
+			decompressedReader = bzip2.NewReader(compressedReader)
 		case model_analysis_pb.HttpArchiveContents_Key_TAR_GZ:
 			decompressedReader, err = gzip.NewReader(compressedReader)
 			if err != nil {
@@ -342,6 +352,13 @@ func (*baseComputer[TReference, TMetadata]) ComputeHTTPArchiveContentsValue(ctx 
 			if err != nil {
 				return PatchedHTTPArchiveContentsValue[TMetadata]{}, err
 			}
+		case model_analysis_pb.HttpArchiveContents_Key_TAR_ZST:
+			zstdReader, err := zstd.NewReader(compressedReader)
+			if err != nil {
+				return PatchedHTTPArchiveContentsValue[TMetadata]{}, err
+			}
+			defer zstdReader.Close()
+			decompressedReader = zstdReader
 		default:
 			panic("unhandled compression format")
 		}

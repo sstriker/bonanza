@@ -1685,6 +1685,15 @@ message HttpArchiveContents {
       // ZIP archive, using the file format documented at
       // https://support.pkware.com/pkzip/appnote.
       ZIP = 3;
+
+      // Uncompressed tarball.
+      TAR = 4;
+
+      // Bzip2 compressed tarball.
+      TAR_BZ2 = 5;
+
+      // Zstandard compressed tarball.
+      TAR_ZST = 6;
     }
 
     // The format of the archive.
