@@ -34,6 +34,12 @@ var enumTypes = map[string][]string{
 		"pretty",
 		"json",
 	},
+	"TestOutput": {
+		"summary",
+		"errors",
+		"all",
+		"streamed",
+	},
 	"QueryOutput": {
 		"build",
 		"label",
@@ -343,6 +349,20 @@ var commands = map[string]command{
 				longName:    "run_under",
 				description: "Prefix to insert before the executables for the 'test' and 'run' commands. If the value is 'foo -bar', and the execution command line is 'test_binary -baz', then the final command line is 'foo -bar test_binary -baz'.This can also be a label to an executable target. Some examples are: 'valgrind', 'strace', 'strace -c', 'valgrind --quiet --num-callers=20', '//package:target', '//package:target --options'.",
 				flagType:    stringFlagType{},
+			},
+		},
+		takesArguments: true,
+	},
+	"test": {
+		ancestor: "build",
+		flags: []flag{
+			{
+				longName:    "test_output",
+				description: "Specifies desired output mode. Valid values are 'summary' to output only test status summary, 'errors' to also print test logs for failed tests, 'all' to print logs for all tests and 'streamed' to output logs for all tests in real time.",
+				flagType: enumFlagType{
+					enumType:     "TestOutput",
+					defaultValue: "summary",
+				},
 			},
 		},
 		takesArguments: true,

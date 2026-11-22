@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 
 	"bonanza.build/pkg/label"
@@ -62,6 +63,21 @@ func (c *baseComputer[TReference, TMetadata]) ComputeBuildResultValue(ctx contex
 		}
 		missingDependencies = true
 	}
+
+	// Determine which tests to run, if any.
+	var canonicalTestQuery label.Query[label.CanonicalTargetPattern]
+	gotCanonicalTestQuery := false
+	if key.TestQuery != "" {
+		canonicalTestQuery, err = parseRootModuleQuery(e, key.TestQuery)
+		gotCanonicalTestQuery = err == nil
+		if !gotCanonicalTestQuery {
+			if !errors.Is(err, evaluation.ErrMissingDependency) {
+				return PatchedBuildResultValue[TMetadata]{}, fmt.Errorf("invalid test query: %w", err)
+			}
+			missingDependencies = true
+		}
+	}
+	var tests []*model_analysis_pb.BuildResult_Value_Test
 
 	for i, configuration := range key.Configurations {
 		targetPlatformConfigurationReference, err := c.createInitialConfiguration(ctx, e, analysisEncoders, starlarkValueEncoders, thread, rootPackage, configuration)
@@ -153,6 +169,41 @@ func (c *baseComputer[TReference, TMetadata]) ComputeBuildResultValue(ctx contex
 			}
 			missingDependencies = true
 		}
+
+		// Execute the tests yielded by the test query.
+		if gotCanonicalTestQuery {
+			var testIterErr error
+			for canonicalTestLabel := range c.allQueryLabels(
+				ctx,
+				e,
+				analysisReaders,
+				canonicalTestQuery,
+				&testIterErr,
+			) {
+				testResultValue := e.GetTestResultValue(
+					model_core.MustBuildPatchedMessage(func(patcher *model_core.ReferenceMessagePatcher[TMetadata]) *model_analysis_pb.TestResult_Key {
+						return &model_analysis_pb.TestResult_Key{
+							Label:                  canonicalTestLabel.String(),
+							ConfigurationReference: model_core.Patch(e, clonedConfigurationReference).Merge(patcher),
+						}
+					}),
+				)
+				if !testResultValue.IsSet() {
+					missingDependencies = true
+					continue
+				}
+				tests = append(tests, &model_analysis_pb.BuildResult_Value_Test{
+					Label:  canonicalTestLabel.String(),
+					Result: testResultValue.Message,
+				})
+			}
+			if testIterErr != nil {
+				if !errors.Is(testIterErr, evaluation.ErrMissingDependency) {
+					return PatchedBuildResultValue[TMetadata]{}, fmt.Errorf("failed to expand test query: %w", testIterErr)
+				}
+				missingDependencies = true
+			}
+		}
 	}
 	if missingDependencies {
 		return PatchedBuildResultValue[TMetadata]{}, evaluation.ErrMissingDependency
@@ -171,5 +222,8 @@ func (c *baseComputer[TReference, TMetadata]) ComputeBuildResultValue(ctx contex
 		return PatchedBuildResultValue[TMetadata]{}, fmt.Errorf("requested output groups %s are not provided by any of the top-level targets or aspects", strings.Join(unknownOutputGroups, ", "))
 	}
 
-	return model_core.NewSimplePatchedMessage[TMetadata](&model_analysis_pb.BuildResult_Value{}), nil
+	sort.SliceStable(tests, func(i, j int) bool { return tests[i].Label < tests[j].Label })
+	return model_core.NewSimplePatchedMessage[TMetadata](&model_analysis_pb.BuildResult_Value{
+		Tests: tests,
+	}), nil
 }

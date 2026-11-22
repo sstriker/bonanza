@@ -12,6 +12,7 @@ import (
 	commands_info "bonanza.build/pkg/bazelclient/commands/info"
 	commands_license "bonanza.build/pkg/bazelclient/commands/license"
 	commands_query "bonanza.build/pkg/bazelclient/commands/query"
+	commands_test "bonanza.build/pkg/bazelclient/commands/test"
 	commands_version "bonanza.build/pkg/bazelclient/commands/version"
 	"bonanza.build/pkg/bazelclient/formatted"
 	"bonanza.build/pkg/bazelclient/logging"
@@ -89,6 +90,8 @@ func main() {
 	case *arguments.RunCommand:
 		logger := logging.NewLoggerFromFlags(&typedCmd.CommonFlags)
 		logger.Fatal(formatted.Text("The \"run\" command is not supported yet, as Bonanza does not download build outputs"))
+	case *arguments.TestCommand:
+		commands_test.DoTest(typedCmd, workspacePath)
 	case *arguments.VersionCommand:
 		commands_version.DoVersion(typedCmd)
 	default:

@@ -286,27 +286,45 @@ func DoBuild(args *arguments.BuildCommand, workspacePath path.Parser) {
 	logger := logging.NewLoggerFromFlags(&args.CommonFlags)
 	commands.ValidateInsideWorkspace(logger, "build", workspacePath)
 
-	evaluation := Evaluate(logger, &args.CommonFlags, workspacePath, "build", func(currentPackage label.CanonicalPackage) proto.Message {
+	evaluation := EvaluateBuildResult(logger, "build", &args.CommonFlags, &args.BuildFlags, args.Arguments, args.BuildSettingOverrides, workspacePath, false)
+	if outcomesLink, ok := evaluation.GetOutcomesLink(); ok {
+		logger.Info(formatted.Join(formatted.Text("Got build results "), outcomesLink))
+	}
+}
+
+// EvaluateBuildResult builds the targets matching the provided target
+// patterns remotely. If runTests is set, the tests matching the target
+// patterns are executed as well. This function provides the logic
+// that is shared by "bazel build" and "bazel test".
+func EvaluateBuildResult(logger logging.Logger, commandName string, commonFlags *arguments.CommonFlags, buildFlags *arguments.BuildFlags, targetPatterns []string, buildSettingOverrides []arguments.BuildSettingOverride, workspacePath path.Parser, runTests bool) *Evaluation {
+	return Evaluate(logger, commonFlags, workspacePath, commandName, func(currentPackage label.CanonicalPackage) proto.Message {
 		// Convert the target patterns and tag filters to a
 		// query. This allows target patterns prefixed with "-"
 		// to exclude targets (e.g., "bazel build -- //...
 		// -//foo/...").
 		query, err := label.NewQueryFromTargetPatternArguments(
-			args.Arguments,
-			strings.Split(args.BuildFlags.BuildTagFilters, ","),
+			targetPatterns,
+			strings.Split(buildFlags.BuildTagFilters, ","),
 			currentPackage.AppendTargetPattern,
 		)
 		if err != nil {
 			logger.Fatal(formatted.Textf("Invalid target patterns: %s", err))
+		}
+		queryStr := label.QueryToString(query)
+		testQuery := ""
+		if runTests {
+			// Test suites are expanded into the tests they
+			// contain.
+			testQuery = "tests(" + queryStr + ")"
 		}
 
 		// Determine the configurations for which to build. The Bazel
 		// CLI only supports specifying build setting overrides and a
 		// single list of platforms. However, there is no way to pick
 		// different build setting overrides depending on the platform.
-		commonBuildSettingOverrides := make([]*model_analysis_pb.BuildResult_Key_BuildSettingOverride, 0, len(args.BuildSettingOverrides))
+		commonBuildSettingOverrides := make([]*model_analysis_pb.BuildResult_Key_BuildSettingOverride, 0, len(buildSettingOverrides))
 		rootRepo := currentPackage.GetCanonicalRepo()
-		for _, override := range args.BuildSettingOverrides {
+		for _, override := range buildSettingOverrides {
 			commonBuildSettingOverrides = append(
 				commonBuildSettingOverrides,
 				&model_analysis_pb.BuildResult_Key_BuildSettingOverride{
@@ -319,15 +337,15 @@ func DoBuild(args *arguments.BuildCommand, workspacePath path.Parser) {
 			commonBuildSettingOverrides,
 			&model_analysis_pb.BuildResult_Key_BuildSettingOverride{
 				Label: "@bazel_tools//command_line_option:host_platform",
-				Value: args.BuildFlags.HostPlatform,
+				Value: buildFlags.HostPlatform,
 			},
 		)
 
 		// Like Bazel, the target platform defaults to the host
 		// platform if --platforms is not provided.
-		targetPlatforms := strings.FieldsFunc(args.BuildFlags.Platforms, func(r rune) bool { return r == ',' })
+		targetPlatforms := strings.FieldsFunc(buildFlags.Platforms, func(r rune) bool { return r == ',' })
 		if len(targetPlatforms) == 0 {
-			targetPlatforms = []string{args.BuildFlags.HostPlatform}
+			targetPlatforms = []string{buildFlags.HostPlatform}
 		}
 		configurations := make([]*model_analysis_pb.BuildResult_Key_Configuration, 0, len(targetPlatforms))
 		for _, targetPlatform := range targetPlatforms {
@@ -348,7 +366,7 @@ func DoBuild(args *arguments.BuildCommand, workspacePath path.Parser) {
 		// absolute, so that they can be resolved from the
 		// perspective of the root module.
 		var aspects []string
-		for _, aspectsArgument := range args.BuildFlags.Aspects {
+		for _, aspectsArgument := range buildFlags.Aspects {
 			for _, aspect := range strings.FieldsFunc(aspectsArgument, func(r rune) bool { return r == ',' }) {
 				separator := strings.LastIndexByte(aspect, '%')
 				if separator < 0 {
@@ -361,8 +379,8 @@ func DoBuild(args *arguments.BuildCommand, workspacePath path.Parser) {
 				aspects = append(aspects, apparentLabel.String()+aspect[separator:])
 			}
 		}
-		aspectParameters := make([]*model_analysis_pb.BuildResult_Key_AspectParameter, 0, len(args.BuildFlags.AspectsParameters))
-		for _, aspectParameter := range args.BuildFlags.AspectsParameters {
+		aspectParameters := make([]*model_analysis_pb.BuildResult_Key_AspectParameter, 0, len(buildFlags.AspectsParameters))
+		for _, aspectParameter := range buildFlags.AspectsParameters {
 			name, value, ok := strings.Cut(aspectParameter, "=")
 			if !ok {
 				logger.Fatal(formatted.Textf("Invalid aspect parameter %#v: expected <param_name>=<param_value>", aspectParameter))
@@ -373,24 +391,22 @@ func DoBuild(args *arguments.BuildCommand, workspacePath path.Parser) {
 			})
 		}
 
-		outputSelection, explicitOutputGroups := getOutputSelection(args.BuildFlags.OutputGroups, args.BuildFlags.ExtraDefaultOutputGroups)
+		outputSelection, explicitOutputGroups := getOutputSelection(buildFlags.OutputGroups, buildFlags.ExtraDefaultOutputGroups)
 		var requiredOutputGroups []string
-		if args.BuildFlags.IncompatibleFailOnUnknownOutputGroups {
+		if buildFlags.IncompatibleFailOnUnknownOutputGroups {
 			requiredOutputGroups = explicitOutputGroups
 		}
 
 		return &model_analysis_pb.BuildResult_Key{
-			Query:                label.QueryToString(query),
+			Query:                queryStr,
 			Configurations:       configurations,
 			Aspects:              aspects,
 			AspectParameters:     aspectParameters,
 			Outputs:              outputSelection,
 			RequiredOutputGroups: requiredOutputGroups,
+			TestQuery:            testQuery,
 		}
 	})
-	if outcomesLink, ok := evaluation.GetOutcomesLink(); ok {
-		logger.Info(formatted.Join(formatted.Text("Got build results "), outcomesLink))
-	}
 }
 
 // builtinsModuleNames contains the names of modules containing

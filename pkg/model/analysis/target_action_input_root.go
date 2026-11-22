@@ -13,6 +13,7 @@ import (
 	model_starlark "bonanza.build/pkg/model/starlark"
 	model_analysis_pb "bonanza.build/pkg/proto/model/analysis"
 	model_core_pb "bonanza.build/pkg/proto/model/core"
+	"bonanza.build/pkg/storage/object"
 
 	"github.com/buildbarn/bb-storage/pkg/filesystem/path"
 )
@@ -104,54 +105,8 @@ func (*baseComputer[TReference, TMetadata]) ComputeTargetActionInputRootValue(ct
 		}
 		toolLeaf := toolLevel.Leaf
 
-		// Add the tool's executable to the input root.
-		executable := model_core.Nested(tool, toolLeaf.Executable)
-		if err := addFileToMergedDirectory(
-			e,
-			executable,
-			&rootDirectory,
-			model_analysis_pb.DirectoryLayout_INPUT_ROOT,
-		); err != nil {
-			return PatchedTargetActionInputRootValue[TMetadata]{}, fmt.Errorf("failed to add tool executable to input root: %w", err)
-		}
-
-		// Create the tool's runfiles directory.
-		executablePath, err := model_starlark.FileGetInputRootPath(executable, nil)
-		if err != nil {
-			return PatchedTargetActionInputRootValue[TMetadata]{}, fmt.Errorf("failed to get path of tool executable: %w", err)
-		}
-		runfilesDirectoryResolver := mergedDirectoryResolver[TReference]{
-			directory: &rootDirectory,
-		}
-		if err := path.Resolve(
-			path.UNIXFormat.NewParser(executablePath+".runfiles"),
-			path.NewRelativeScopeWalker(&runfilesDirectoryResolver),
-		); err != nil {
-			return PatchedTargetActionInputRootValue[TMetadata]{}, fmt.Errorf("failed to create runfiles directory of tool with path %#v: %w", executablePath, err)
-		}
-		runfilesDirectory := runfilesDirectoryResolver.directory
-		if runfilesDirectoryResolver.terminalName != nil {
-			runfilesDirectory = runfilesDirectory.GetOrCreateDirectory(*runfilesDirectoryResolver.terminalName)
-		}
-		if err := addFilesToMergedDirectory(
-			e,
-			model_core.Nested(tool, toolLeaf.RunfilesFiles),
-			runfilesDirectory,
-			model_analysis_pb.DirectoryLayout_RUNFILES,
-		); err != nil {
-			return PatchedTargetActionInputRootValue[TMetadata]{}, fmt.Errorf("failed to add runfiles files of tool with path %#v to input root: %w", executablePath, err)
-		}
-
-		// Create a ctx.workspace_name == "_main" directory.
-		// This is needed to make path lookups of the form
-		// "${RUNFILES_DIR}/_main/../${path}" work.
-		runfilesDirectory.GetOrCreateDirectory(componentMainWorkspaceName)
-
-		if len(toolLeaf.RunfilesSymlinks) > 0 {
-			return PatchedTargetActionInputRootValue[TMetadata]{}, errors.New("TODO: add runfiles symlinks to the input root")
-		}
-		if len(toolLeaf.RunfilesRootSymlinks) > 0 {
-			return PatchedTargetActionInputRootValue[TMetadata]{}, errors.New("TODO: add runfiles root symlinks to the input root")
+		if _, err := addFilesToRunToMergedDirectory(e, model_core.Nested(tool, toolLeaf), &rootDirectory); err != nil {
+			return PatchedTargetActionInputRootValue[TMetadata]{}, err
 		}
 	}
 	if errIter != nil {
@@ -179,4 +134,67 @@ func (*baseComputer[TReference, TMetadata]) ComputeTargetActionInputRootValue(ct
 			InputRootReference: inputRootReference.Merge(patcher),
 		}, nil
 	})
+}
+
+// addFilesToRunToMergedDirectory adds the executable of a
+// FilesToRunProvider to a MergedDirectory corresponding to an input
+// root, and creates a runfiles directory next to it. The input root
+// relative path of the executable is returned.
+func addFilesToRunToMergedDirectory[TReference object.BasicReference, TMetadata model_core.ReferenceMetadata](
+	e addFilesToMergedDirectoryEnvironment[TReference, TMetadata],
+	filesToRun model_core.Message[*model_analysis_pb.FilesToRunProvider_Leaf, TReference],
+	rootDirectory *model_filesystem.MergedDirectory[TReference],
+) (string, error) {
+	tool := filesToRun
+	toolLeaf := filesToRun.Message
+	// Add the tool's executable to the input root.
+	executable := model_core.Nested(tool, toolLeaf.Executable)
+	if err := addFileToMergedDirectory(
+		e,
+		executable,
+		rootDirectory,
+		model_analysis_pb.DirectoryLayout_INPUT_ROOT,
+	); err != nil {
+		return "", fmt.Errorf("failed to add tool executable to input root: %w", err)
+	}
+
+	// Create the tool's runfiles directory.
+	executablePath, err := model_starlark.FileGetInputRootPath(executable, nil)
+	if err != nil {
+		return "", fmt.Errorf("failed to get path of tool executable: %w", err)
+	}
+	runfilesDirectoryResolver := mergedDirectoryResolver[TReference]{
+		directory: rootDirectory,
+	}
+	if err := path.Resolve(
+		path.UNIXFormat.NewParser(executablePath+".runfiles"),
+		path.NewRelativeScopeWalker(&runfilesDirectoryResolver),
+	); err != nil {
+		return "", fmt.Errorf("failed to create runfiles directory of tool with path %#v: %w", executablePath, err)
+	}
+	runfilesDirectory := runfilesDirectoryResolver.directory
+	if runfilesDirectoryResolver.terminalName != nil {
+		runfilesDirectory = runfilesDirectory.GetOrCreateDirectory(*runfilesDirectoryResolver.terminalName)
+	}
+	if err := addFilesToMergedDirectory(
+		e,
+		model_core.Nested(tool, toolLeaf.RunfilesFiles),
+		runfilesDirectory,
+		model_analysis_pb.DirectoryLayout_RUNFILES,
+	); err != nil {
+		return "", fmt.Errorf("failed to add runfiles files of tool with path %#v to input root: %w", executablePath, err)
+	}
+
+	// Create a ctx.workspace_name == "_main" directory.
+	// This is needed to make path lookups of the form
+	// "${RUNFILES_DIR}/_main/../${path}" work.
+	runfilesDirectory.GetOrCreateDirectory(componentMainWorkspaceName)
+
+	if len(toolLeaf.RunfilesSymlinks) > 0 {
+		return "", errors.New("TODO: add runfiles symlinks to the input root")
+	}
+	if len(toolLeaf.RunfilesRootSymlinks) > 0 {
+		return "", errors.New("TODO: add runfiles root symlinks to the input root")
+	}
+	return executablePath, nil
 }
