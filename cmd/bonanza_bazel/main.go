@@ -8,6 +8,7 @@ import (
 
 	"bonanza.build/pkg/bazelclient/arguments"
 	commands_build "bonanza.build/pkg/bazelclient/commands/build"
+	commands_help "bonanza.build/pkg/bazelclient/commands/help"
 	commands_info "bonanza.build/pkg/bazelclient/commands/info"
 	commands_license "bonanza.build/pkg/bazelclient/commands/license"
 	commands_query "bonanza.build/pkg/bazelclient/commands/query"
@@ -72,17 +73,25 @@ func main() {
 	switch typedCmd := cmd.(type) {
 	case *arguments.BuildCommand:
 		commands_build.DoBuild(typedCmd, workspacePath)
+	case *arguments.CleanCommand:
+		// Builds are performed remotely, and their results are
+		// not stored locally. There is no output base to remove.
+		logger := logging.NewLoggerFromFlags(&typedCmd.CommonFlags)
+		logger.Info(formatted.Text("Nothing to clean, as Bonanza does not store any build outputs locally"))
 	case *arguments.HelpCommand:
-		panic("HELP")
+		commands_help.DoHelp(typedCmd)
 	case *arguments.InfoCommand:
 		commands_info.DoInfo(typedCmd, workspacePath)
 	case *arguments.LicenseCommand:
 		commands_license.DoLicense()
 	case *arguments.QueryCommand:
 		commands_query.DoQuery(typedCmd, workspacePath)
+	case *arguments.RunCommand:
+		logger := logging.NewLoggerFromFlags(&typedCmd.CommonFlags)
+		logger.Fatal(formatted.Text("The \"run\" command is not supported yet, as Bonanza does not download build outputs"))
 	case *arguments.VersionCommand:
 		commands_version.DoVersion(typedCmd)
 	default:
-		panic("unknown command type")
+		startupLogger.Fatal(formatted.Textf("Command %T is not supported", cmd))
 	}
 }

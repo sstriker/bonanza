@@ -172,6 +172,37 @@ func main() {
 		fmt.Printf("}\n")
 	}
 
+	// Emit documentation of all commands and their flags, which
+	// is used to implement "bazel help".
+	fmt.Printf("// CommandNames contains the names of all supported commands, sorted\n")
+	fmt.Printf("// alphabetically.\n")
+	fmt.Printf("var CommandNames = %#v\n", slices.Sorted(maps.Keys(commands)))
+	fmt.Printf("// GetCommandFlags returns the documentation of all flags accepted by\n")
+	fmt.Printf("// a command, including those it inherits from other commands.\n")
+	fmt.Printf("func GetCommandFlags(name string) ([]FlagHelp, bool) {\n")
+	fmt.Printf("switch name {\n")
+	for _, commandName := range slices.Sorted(maps.Keys(commands)) {
+		fmt.Printf("case %#v:\n", commandName)
+		fmt.Printf("return []FlagHelp{\n")
+		var flags []flag
+		for ancestorName := commandName; ; ancestorName = commands[ancestorName].ancestor {
+			if ancestorName == "common" {
+				flags = append(flags, commonFlags...)
+				break
+			}
+			flags = append(flags, commands[ancestorName].flags...)
+		}
+		slices.SortFunc(flags, func(a, b flag) int { return strings.Compare(a.longName, b.longName) })
+		for _, f := range flags {
+			fmt.Printf("{LongName: %#v, ShortName: %#v, Description: %#v},\n", f.longName, f.shortName, f.description)
+		}
+		fmt.Printf("}, true\n")
+	}
+	fmt.Printf("default:\n")
+	fmt.Printf("return nil, false\n")
+	fmt.Printf("}\n")
+	fmt.Printf("}\n")
+
 	fmt.Printf("func newCommandByName(name string) (assignableCommand, []commandAncestor, bool) {\n")
 	fmt.Printf("switch name {")
 	for _, commandName := range slices.Sorted(maps.Keys(commands)) {
