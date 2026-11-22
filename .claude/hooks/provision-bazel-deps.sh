@@ -205,6 +205,43 @@ if has_override aspect_bazel_lib; then
 )' && log "aspect_bazel_lib: rules_go made a regular dependency"
 fi
 
+# bazel_lib: likewise, rules_go is only a dev dependency in releases.
+if has_override bazel_lib; then
+  pyreplace "$DEPS/bazel_lib/MODULE.bazel" '    dev_dependency = IS_RELEASE,
+    repo_name = "io_bazel_rules_go",' '    # Sandbox: regular dependency, as the source toolchains need it.
+    repo_name = "io_bazel_rules_go",' 'Sandbox: regular dependency' &&
+    log "bazel_lib: rules_go made a regular dependency"
+fi
+
+# --override_module discards the patches of the root module's
+# single_version_override() (e.g. toolchains_llvm's non-root.diff).
+# Apply them to the local clones instead.
+python3 - "$CLAUDE_PROJECT_DIR/MODULE.bazel" "$OUT" <<'PYEOF' | while read -r m dir patch; do
+import re, sys
+src = open(sys.argv[1]).read()
+overrides = dict(
+    l.strip().split("=", 1)[1].split("=", 1)
+    for l in open(sys.argv[2])
+    if l.startswith("common --override_module=")
+)
+for call in re.finditer(r"single_version_override\((.*?)\n\)", src, re.S):
+    body = call.group(1)
+    name = re.search(r'module_name = "([^"]+)"', body)
+    if not name or name.group(1) not in overrides:
+        continue
+    for patch in re.findall(r'"//:(patches/[^"]+)"', body):
+        print(name.group(1), overrides[name.group(1)], patch)
+PYEOF
+  stamp="$dir/.root-patch-$(basename "$patch")"
+  [ -f "$stamp" ] && continue
+  if patch -p0 -d "$dir" -s --no-backup-if-mismatch < "$CLAUDE_PROJECT_DIR/$patch"; then
+    touch "$stamp"
+    log "$m: applied root module patch $patch"
+  else
+    log "WARNING: $m: root module patch $patch did not apply"
+  fi
+done
+
 # bazel_lib + aspect_bazel_lib: substitute the coreutils prebuilt binary.
 for m in bazel_lib aspect_bazel_lib; do
   f="$DEPS/$m/lib/private/coreutils_toolchain.bzl"
