@@ -179,3 +179,11 @@ func parseUserDefinedBuildSetting(cmd assignableCommand, mustApply bool, longOpt
 	})
 	return true, nil
 }
+
+// FlagHelp contains the documentation of a single flag accepted by a
+// command.
+type FlagHelp struct {
+	LongName    string
+	ShortName   string
+	Description string
+}

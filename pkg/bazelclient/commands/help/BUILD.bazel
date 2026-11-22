@@ -1,0 +1,19 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "help",
+    srcs = ["do_help.go"],
+    importpath = "bonanza.build/pkg/bazelclient/commands/help",
+    visibility = ["//visibility:public"],
+    deps = ["//pkg/bazelclient/arguments"],
+)
+
+go_test(
+    name = "help_test",
+    srcs = ["do_help_internal_test.go"],
+    embed = [":help"],
+    deps = [
+        "//pkg/bazelclient/arguments",
+        "@com_github_stretchr_testify//require",
+    ],
+)
