@@ -1106,7 +1106,14 @@ func (c *baseComputer[TReference, TMetadata]) computeRuleTargetValue(
 	if err != nil {
 		return PatchedConfiguredTargetValue[TMetadata]{}, err
 	}
-	return c.encodeRuleTargetValue(ctx, e, thread, analysisEncoders, valueEncodingOptionsFactory, emptyDefaultInfo, providerInstances, ruleDefinition.Message.Provides, outputRegistrar, rc.targetContext)
+	var test *model_starlark_pb.RuleTarget_Test
+	if ruleDefinition.Message.Type == model_starlark_pb.Rule_Definition_TEST {
+		test = ruleTarget.Message.Test
+		if test == nil {
+			test = &model_starlark_pb.RuleTarget_Test{}
+		}
+	}
+	return c.encodeRuleTargetValue(ctx, e, thread, analysisEncoders, valueEncodingOptionsFactory, emptyDefaultInfo, providerInstances, ruleDefinition.Message.Provides, test, outputRegistrar, rc.targetContext)
 }
 
 // checkProvides checks whether the implementation function of a rule
@@ -1270,6 +1277,7 @@ func (c *baseComputer[TReference, TMetadata]) encodeRuleTargetValue(
 	emptyDefaultInfo model_core.Message[*model_starlark_pb.Struct, TReference],
 	providerInstances []*model_starlark.Struct[TReference, TMetadata],
 	provides []string,
+	test *model_starlark_pb.RuleTarget_Test,
 	outputRegistrar *targetOutputRegistrar[TReference, TMetadata],
 	tc *targetContext[TReference, TMetadata],
 ) (PatchedConfiguredTargetValue[TMetadata], error) {
@@ -1326,11 +1334,22 @@ func (c *baseComputer[TReference, TMetadata]) encodeRuleTargetValue(
 			return nil, err
 		}
 
+		// For test rules, capture the properties that are
+		// needed to execute the test.
+		var encodedTest *model_analysis_pb.ConfiguredTarget_Value_Test
+		if test != nil {
+			encodedTest, err = tc.encodeTest(thread, providerInstances, test, patcher)
+			if err != nil {
+				return nil, err
+			}
+		}
+
 		// TODO: We should use inlinedtree.Build() here.
 		return &model_analysis_pb.ConfiguredTarget_Value{
 			ProviderInstances: encodedProviderInstances,
 			Outputs:           outputs,
 			Actions:           actions,
+			Test:              encodedTest,
 		}, nil
 	})
 }

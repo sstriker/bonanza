@@ -304,9 +304,29 @@ message BuildResult {
     // which only applies to output groups that are requested
     // explicitly.
     repeated string required_output_groups = 6;
+
+    // If set, the test rules yielded by this query expression are
+    // executed after building, and their results are returned. This
+    // is used to implement "bazel test". Test suites are expanded
+    // into the tests they contain. The query is resolved in the same
+    // way as the query in field 'query'.
+    string test_query = 7;
   }
 
-  message Value {}
+  message Value {
+    message Test {
+      // The canonical label of the test.
+      string label = 1;
+
+      // The result of executing the test.
+      TestResult.Value result = 2;
+    }
+
+    // The results of the tests that were executed, if test_query was
+    // set. Tests are sorted by label, and subsequently by the order of
+    // the configurations in which they were executed.
+    repeated Test tests = 1;
+  }
 }
 
 // CanonicalRepoName resolves the canonical name of a repo, given its
@@ -997,6 +1017,36 @@ message ConfiguredTarget {
     // Outputs are stored in a B-tree, where entries are sorted
     // alphabetically by package relative path.
     repeated Output outputs = 2;
+
+    message Test {
+      message EnvironmentVariable {
+        string name = 1;
+        string value = 2;
+      }
+
+      // The executable of the test and its runfiles, as provided by
+      // the rule through DefaultInfo.
+      FilesToRunProvider.Leaf files_to_run = 1;
+
+      // The public key of the platform on which the test needs to be
+      // executed. This corresponds to the execution platform of the
+      // "test" execution group if the rule declares one, or the
+      // default execution group otherwise.
+      bytes platform_pkix_public_key = 2;
+
+      // Environment variables that need to be set when executing the
+      // test, as provided by the rule through RunEnvironmentInfo,
+      // sorted by name.
+      repeated EnvironmentVariable environment = 3;
+
+      // The size and timeout of the test.
+      bonanza.model.starlark.TestSize size = 4;
+      bonanza.model.starlark.TestTimeout timeout = 5;
+    }
+
+    // If the target is a test rule, the properties that are needed to
+    // execute the test.
+    Test test = 5;
 
     message Action {
       message Parent {
@@ -3279,6 +3329,55 @@ message TargetProviders {
 // TestSuiteTests returns the labels of the tests that are part of a
 // test suite, after recursively expanding any test suites contained
 // within, and applying the test suite's filters on tags and sizes.
+// TestResult executes a test rule target, and returns its result.
+message TestResult {
+  message Key {
+    option (bonanza.model.evaluation.key_description) = {
+      template: "Testing {label}"
+    };
+    // The canonical label of the test rule target.
+    string label = 1;
+
+    // The configuration in which the test is executed, prior to
+    // applying the target's incoming edge transition.
+    bonanza.model.core.DecodableReference configuration_reference = 2
+        [(bonanza.model.core.object_format) = {
+          proto_list_type_name:
+            "bonanza.model.analysis.BuildSettingOverride";
+        }];
+  }
+
+  message Value {
+    enum Status {
+      // The status of the test is unknown.
+      STATUS_UNKNOWN = 0;
+
+      // The test exited with exit code zero.
+      PASSED = 1;
+
+      // The test exited with a non-zero exit code.
+      FAILED = 2;
+
+      // The test did not complete within its timeout.
+      TIMEOUT = 3;
+    }
+
+    // The outcome of executing the test.
+    Status status = 1;
+
+    // The exit code of the test, if it completed.
+    int64 exit_code = 2;
+
+    // The tail of the combined standard output and standard error of
+    // the test.
+    string log = 3;
+
+    // Whether the log was truncated, because it exceeded the maximum
+    // size that is returned.
+    bool log_truncated = 4;
+  }
+}
+
 message TestSuiteTests {
   message Key {
     option (bonanza.model.evaluation.key_description) = {

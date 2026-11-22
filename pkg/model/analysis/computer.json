@@ -45,6 +45,7 @@
             "StarlarkValueEncoders",
             "Target",
             "TargetCompletion",
+            "TestResult",
             "VisibleTarget"
          ]
       },
@@ -864,6 +865,21 @@
          "dependsOn": [
             "ConfiguredTarget",
             "StarlarkValueEncoders",
+            "TargetIncomingEdgeTransition"
+         ],
+         "keyContainsReferences": true
+      },
+      "TestResult": {
+         "dependsOn": [
+            "ActionEncoders",
+            "ConfiguredTarget",
+            "DirectoryAccessParameters",
+            "DirectoryCreationParameters",
+            "FileAccessParameters",
+            "FileCreationParameters",
+            "FileRoot",
+            "FilesRoot",
+            "RawActionResult",
             "TargetIncomingEdgeTransition"
          ],
          "keyContainsReferences": true
