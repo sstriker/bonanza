@@ -493,7 +493,7 @@ bool_flag(
 
 bool_flag(
     name = "experimental_enforce_transitive_visibility",
-    build_setting_default = True,
+    build_setting_default = False,
     visibility = ["//visibility:public"],
 )
 
@@ -607,7 +607,7 @@ bool_flag(
 
 string_flag(
     name = "experimental_java_classpath",
-    build_setting_default = "javabuilder",
+    build_setting_default = "bazel",
     values = [
         "bazel",
         "javabuilder",
@@ -1073,13 +1073,13 @@ bool_flag(
 
 bool_flag(
     name = "incompatible_avoid_hardcoded_objc_compilation_flags",
-    build_setting_default = False,
+    build_setting_default = True,
     visibility = ["//visibility:public"],
 )
 
 bool_flag(
     name = "incompatible_bazel_test_exec_run_under",
-    build_setting_default = False,
+    build_setting_default = True,
     visibility = ["//visibility:public"],
 )
 
@@ -1217,7 +1217,7 @@ bool_flag(
 
 bool_flag(
     name = "incompatible_modify_execution_info_additive",
-    build_setting_default = False,
+    build_setting_default = True,
     visibility = ["//visibility:public"],
 )
 
@@ -1638,7 +1638,7 @@ bool_flag(
 
 string_flag(
     name = "strict_proto_deps",
-    build_setting_default = "off",
+    build_setting_default = "error",
     values = [
         "default",
         "error",
