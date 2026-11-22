@@ -748,10 +748,23 @@ type changeTrackingDirectoryExistingFileResolver[TReference object.BasicReferenc
 	loadOptions *changeTrackingDirectoryLoadOptions[TReference]
 	stack       util.NonEmptyStack[*changeTrackingDirectory[TReference, TMetadata]]
 	gotScope    bool
+
+	// Whether symbolic links in the final component of the path
+	// should be followed. Symbolic links in other components are
+	// always followed.
+	followTerminalSymlink bool
+	followedSymlink       bool
+
+	// The components of the fully resolved path, relative to the
+	// root of the input root. As symbolic links are expanded during
+	// resolution, these may differ from the components of the path
+	// that was provided.
+	components []path.Component
 }
 
 func (r *changeTrackingDirectoryExistingFileResolver[TReference, TMetadata]) OnAbsolute() (path.ComponentWalker, error) {
 	r.stack.PopAll()
+	r.components = r.components[:0]
 	r.gotScope = true
 	return r, nil
 }
@@ -778,19 +791,66 @@ func (r *changeTrackingDirectoryExistingFileResolver[TReference, TMetadata]) OnD
 	}
 	if dChild, ok := d.directories[name]; ok {
 		r.stack.Push(dChild)
+		r.components = append(r.components, name)
 		return path.GotDirectory{
 			Child:        r,
 			IsReversible: true,
 		}, nil
 	}
+	if target, ok := d.symlinks[name]; ok {
+		return r.followSymlink(target), nil
+	}
 	return nil, errDirectoryDoesNotExist
+}
+
+func (r *changeTrackingDirectoryExistingFileResolver[TReference, TMetadata]) OnTerminal(name path.Component) (*path.GotSymlink, error) {
+	if r.followTerminalSymlink {
+		d := r.stack.Peek()
+		if err := d.maybeLoadContents(r.loadOptions); err != nil {
+			return nil, err
+		}
+		if target, ok := d.symlinks[name]; ok {
+			gotSymlink := r.followSymlink(target)
+			return &gotSymlink, nil
+		}
+	}
+	return r.TerminalNameTrackingComponentWalker.OnTerminal(name)
+}
+
+// followSymlink continues resolution at the target of a symbolic link
+// contained in the input root. The resolver itself acts as the scope
+// walker of the target. Absolute targets are mapped back into the
+// input root by the virtual root scope walker through which resolution
+// was started, which decorates the GotSymlink response. If the target
+// lies outside the input root, the resolver's scope walker methods are
+// not called again, causing gotScope to remain false.
+func (r *changeTrackingDirectoryExistingFileResolver[TReference, TMetadata]) followSymlink(target path.Parser) path.GotSymlink {
+	r.gotScope = false
+	r.followedSymlink = true
+	return path.GotSymlink{
+		Parent: r,
+		Target: target,
+	}
 }
 
 func (r *changeTrackingDirectoryExistingFileResolver[TReference, TMetadata]) OnUp() (path.ComponentWalker, error) {
 	if _, ok := r.stack.PopSingle(); !ok {
 		return nil, errors.New("path resolves to a location above the root directory")
 	}
+	r.components = r.components[:len(r.components)-1]
 	return r, nil
+}
+
+// checkSymlinksStayInInputRoot returns an error if resolution of a path
+// started inside the input root, but left it by following a symbolic
+// link. Accessing such paths is not supported, as the input root is
+// not available on the host on which commands are executed to access
+// locations outside of it.
+func (r *changeTrackingDirectoryExistingFileResolver[TReference, TMetadata]) checkSymlinksStayInInputRoot(p *model_starlark.BarePath) error {
+	if r.followedSymlink && !r.gotScope {
+		return fmt.Errorf("path %#v contains a symbolic link pointing to a location outside the input root, which is not supported", p.GetUNIXString())
+	}
+	return nil
 }
 
 var errFileDoesNotExist = errors.New("file does not exist")
@@ -1528,6 +1588,7 @@ type moduleOrRepositoryContext[TReference object.BasicReference, TMetadata model
 	fileReader                         *model_filesystem.FileReader[TReference]
 	pathUnpackerInto                   unpack.UnpackerInto[*model_starlark.BarePath]
 	repoPlatform                       model_core.Message[*model_analysis_pb.RegisteredRepoPlatform_Value, TReference]
+	stableInputRootPath                *model_starlark.BarePath
 	virtualRootScopeWalkerFactory      *path.VirtualRootScopeWalkerFactory
 
 	inputRootDirectory *changeTrackingDirectory[TReference, TMetadata]
@@ -1661,6 +1722,7 @@ func (mrc *moduleOrRepositoryContext[TReference, TMetadata]) maybeGetStableInput
 		}
 
 		mrc.defaultWorkingDirectoryPath = defaultWorkingDirectoryPath
+		mrc.stableInputRootPath = stableInputRootPath
 
 		externalPath := stableInputRootPath.Append(model_starlark.ComponentExternal)
 		mrc.externalPath = externalPath
@@ -2470,11 +2532,15 @@ func (mrc *moduleOrRepositoryContext[TReference, TMetadata]) doRead(thread *eval
 	}
 
 	r := &changeTrackingDirectoryExistingFileResolver[TReference, TMetadata]{
-		loadOptions: mrc.directoryLoadOptions,
-		stack:       util.NewNonEmptyStack(mrc.inputRootDirectory),
+		loadOptions:           mrc.directoryLoadOptions,
+		stack:                 util.NewNonEmptyStack(mrc.inputRootDirectory),
+		followTerminalSymlink: true,
 	}
-	if err := path.Resolve(filePath, mrc.virtualRootScopeWalkerFactory.New(r)); err != nil {
+	if err := path.Resolve(filePath, path.NewLoopDetectingScopeWalker(mrc.virtualRootScopeWalkerFactory.New(r))); err != nil {
 		return nil, fmt.Errorf("cannot resolve %#v: %w", filePath.GetUNIXString(), err)
+	}
+	if err := r.checkSymlinksStayInInputRoot(filePath); err != nil {
+		return nil, err
 	}
 
 	if r.gotScope {
@@ -2815,14 +2881,18 @@ func (mrc *moduleOrRepositoryContext[TReference, TMetadata]) Exists(p *model_sta
 	}
 
 	r := &changeTrackingDirectoryExistingFileResolver[TReference, TMetadata]{
-		loadOptions: mrc.directoryLoadOptions,
-		stack:       util.NewNonEmptyStack(mrc.inputRootDirectory),
+		loadOptions:           mrc.directoryLoadOptions,
+		stack:                 util.NewNonEmptyStack(mrc.inputRootDirectory),
+		followTerminalSymlink: true,
 	}
-	if err := path.Resolve(p, mrc.virtualRootScopeWalkerFactory.New(r)); err != nil {
+	if err := path.Resolve(p, path.NewLoopDetectingScopeWalker(mrc.virtualRootScopeWalkerFactory.New(r))); err != nil {
 		if errors.Is(err, errDirectoryDoesNotExist) {
 			return false, nil
 		}
 		return false, fmt.Errorf("cannot resolve %#v: %w", p.GetUNIXString(), err)
+	}
+	if err := r.checkSymlinksStayInInputRoot(p); err != nil {
+		return false, err
 	}
 	if r.gotScope {
 		if r.TerminalName == nil {
@@ -2989,14 +3059,18 @@ func (mrc *moduleOrRepositoryContext[TReference, TMetadata]) IsDir(p *model_star
 	}
 
 	r := &changeTrackingDirectoryExistingFileResolver[TReference, TMetadata]{
-		loadOptions: mrc.directoryLoadOptions,
-		stack:       util.NewNonEmptyStack(mrc.inputRootDirectory),
+		loadOptions:           mrc.directoryLoadOptions,
+		stack:                 util.NewNonEmptyStack(mrc.inputRootDirectory),
+		followTerminalSymlink: true,
 	}
-	if err := path.Resolve(p, mrc.virtualRootScopeWalkerFactory.New(r)); err != nil {
+	if err := path.Resolve(p, path.NewLoopDetectingScopeWalker(mrc.virtualRootScopeWalkerFactory.New(r))); err != nil {
 		if errors.Is(err, errDirectoryDoesNotExist) {
 			return false, nil
 		}
 		return false, fmt.Errorf("cannot resolve %#v: %w", p.GetUNIXString(), err)
+	}
+	if err := r.checkSymlinksStayInInputRoot(p); err != nil {
+		return false, err
 	}
 	if r.gotScope {
 		if r.TerminalName == nil {
@@ -3009,15 +3083,8 @@ func (mrc *moduleOrRepositoryContext[TReference, TMetadata]) IsDir(p *model_star
 		if err := d.maybeLoadContents(r.loadOptions); err != nil {
 			return false, err
 		}
-		if _, ok := d.directories[*r.TerminalName]; ok {
-			return true, nil
-		}
-		if _, ok := d.symlinks[*r.TerminalName]; ok {
-			// TODO: Add support for following symbolic links
-			// contained in the input root.
-			return false, fmt.Errorf("path.is_dir(%#v) for symbolic links in the input root has not been implemented yet", p.GetUNIXString())
-		}
-		return false, nil
+		_, ok := d.directories[*r.TerminalName]
+		return ok, nil
 	}
 
 	// Path resolves to a location that is not part of the input
@@ -3054,19 +3121,51 @@ func (mrc *moduleOrRepositoryContext[TReference, TMetadata]) Readdir(p *model_st
 		return nil, evaluation.ErrMissingDependency
 	}
 
-	r := &changeTrackingDirectoryResolver[TReference, TMetadata]{
-		loadOptions: mrc.directoryLoadOptions,
-		stack:       util.NewNonEmptyStack(mrc.inputRootDirectory),
+	r := &changeTrackingDirectoryExistingFileResolver[TReference, TMetadata]{
+		loadOptions:           mrc.directoryLoadOptions,
+		stack:                 util.NewNonEmptyStack(mrc.inputRootDirectory),
+		followTerminalSymlink: true,
 	}
-	if err := path.Resolve(p, mrc.virtualRootScopeWalkerFactory.New(r)); err != nil {
+	if err := path.Resolve(p, path.NewLoopDetectingScopeWalker(mrc.virtualRootScopeWalkerFactory.New(r))); err != nil {
 		if errors.Is(err, errDirectoryDoesNotExist) {
 			return nil, nil
 		}
 		return nil, fmt.Errorf("cannot resolve %#v: %w", p.GetUNIXString(), err)
 	}
+	if err := r.checkSymlinksStayInInputRoot(p); err != nil {
+		return nil, err
+	}
 	if r.gotScope {
-		// TODO: Implement.
-		return nil, fmt.Errorf("path.readdir(%#v) for paths in the input root has not been implemented yet", p.GetUNIXString())
+		// Path resolves to a location inside the input root.
+		// Enumerate the directory's contents directly.
+		d := r.stack.Peek()
+		if r.TerminalName != nil {
+			if err := d.maybeLoadContents(mrc.directoryLoadOptions); err != nil {
+				return nil, err
+			}
+			dChild, ok := d.directories[*r.TerminalName]
+			if !ok {
+				return nil, nil
+			}
+			d = dChild
+		}
+		if err := d.maybeLoadContents(mrc.directoryLoadOptions); err != nil {
+			return nil, err
+		}
+		names := make([]path.Component, 0, len(d.directories)+len(d.files)+len(d.symlinks))
+		for name := range d.directories {
+			names = append(names, name)
+		}
+		for name := range d.files {
+			names = append(names, name)
+		}
+		for name := range d.symlinks {
+			names = append(names, name)
+		}
+		slices.SortFunc(names, func(a, b path.Component) int {
+			return strings.Compare(a.String(), b.String())
+		})
+		return names, nil
 	}
 
 	// Path resolves to a location that is not part of the input
@@ -3134,26 +3233,30 @@ func (mrc *moduleOrRepositoryContext[TReference, TMetadata]) Realpath(p *model_s
 	}
 
 	r := &changeTrackingDirectoryExistingFileResolver[TReference, TMetadata]{
-		loadOptions: mrc.directoryLoadOptions,
-		stack:       util.NewNonEmptyStack(mrc.inputRootDirectory),
+		loadOptions:           mrc.directoryLoadOptions,
+		stack:                 util.NewNonEmptyStack(mrc.inputRootDirectory),
+		followTerminalSymlink: true,
 	}
-	if err := path.Resolve(p, mrc.virtualRootScopeWalkerFactory.New(r)); err != nil {
+	if err := path.Resolve(p, path.NewLoopDetectingScopeWalker(mrc.virtualRootScopeWalkerFactory.New(r))); err != nil {
 		return nil, fmt.Errorf("cannot resolve %#v: %w", p.GetUNIXString(), err)
 	}
+	if err := r.checkSymlinksStayInInputRoot(p); err != nil {
+		return nil, err
+	}
 	if r.gotScope {
-		// Path resolves to a location inside the input root. As
-		// resolution above did not traverse any symbolic links,
-		// the path is already canonical, unless the final
-		// component is a symbolic link.
-		//
-		// TODO: Add support for following symbolic links
-		// contained in the input root.
-		if r.TerminalName != nil {
-			if _, ok := r.stack.Peek().symlinks[*r.TerminalName]; ok {
-				return nil, fmt.Errorf("path.realpath(%#v) for symbolic links in the input root has not been implemented yet", p.GetUNIXString())
-			}
+		// Path resolves to a location inside the input root. The
+		// resolver above has expanded any symbolic links it
+		// encountered, so the canonical path can be reconstructed
+		// by appending the components of the fully resolved path
+		// to the stable input root path.
+		resolvedPath := mrc.stableInputRootPath
+		for _, component := range r.components {
+			resolvedPath = resolvedPath.Append(component)
 		}
-		return p, nil
+		if r.TerminalName != nil {
+			resolvedPath = resolvedPath.Append(*r.TerminalName)
+		}
+		return resolvedPath, nil
 	}
 
 	// Path resolves to a location that is not part of the input
@@ -3434,11 +3537,14 @@ func (rc *repositoryContext[TReference, TMetadata]) doDelete(thread *eval.Thread
 		loadOptions: mrc.directoryLoadOptions,
 		stack:       util.NewNonEmptyStack(mrc.inputRootDirectory),
 	}
-	if err := path.Resolve(filePath, mrc.virtualRootScopeWalkerFactory.New(r)); err != nil {
+	if err := path.Resolve(filePath, path.NewLoopDetectingScopeWalker(mrc.virtualRootScopeWalkerFactory.New(r))); err != nil {
 		if errors.Is(err, errDirectoryDoesNotExist) {
 			return eval.Bool(false), nil
 		}
 		return nil, fmt.Errorf("cannot resolve %#v: %w", filePath.GetUNIXString(), err)
+	}
+	if err := r.checkSymlinksStayInInputRoot(filePath); err != nil {
+		return nil, err
 	}
 	if r.TerminalName == nil {
 		return nil, fmt.Errorf("%#v does not resolve to a file", filePath.GetUNIXString())
@@ -3495,11 +3601,14 @@ func (rc *repositoryContext[TReference, TMetadata]) doPatch(thread *eval.Thread,
 		loadOptions: mrc.directoryLoadOptions,
 		stack:       util.NewNonEmptyStack(mrc.inputRootDirectory),
 	}
-	if err := path.Resolve(patchFile, mrc.virtualRootScopeWalkerFactory.New(r)); err != nil {
+	if err := path.Resolve(patchFile, path.NewLoopDetectingScopeWalker(mrc.virtualRootScopeWalkerFactory.New(r))); err != nil {
 		if errors.Is(err, errDirectoryDoesNotExist) {
 			return eval.Bool(false), nil
 		}
 		return nil, fmt.Errorf("cannot resolve %#v: %w", patchFile.GetUNIXString(), err)
+	}
+	if err := r.checkSymlinksStayInInputRoot(patchFile); err != nil {
+		return nil, err
 	}
 	trackedPatchFile, err := r.getFile()
 	if err != nil {
@@ -3617,11 +3726,15 @@ func (rc *repositoryContext[TReference, TMetadata]) doTemplate(thread *eval.Thre
 
 	// Load the template file.
 	templateFileResolver := &changeTrackingDirectoryExistingFileResolver[TReference, TMetadata]{
-		loadOptions: mrc.directoryLoadOptions,
-		stack:       util.NewNonEmptyStack(mrc.inputRootDirectory),
+		loadOptions:           mrc.directoryLoadOptions,
+		stack:                 util.NewNonEmptyStack(mrc.inputRootDirectory),
+		followTerminalSymlink: true,
 	}
-	if err := path.Resolve(templatePath, mrc.virtualRootScopeWalkerFactory.New(templateFileResolver)); err != nil {
+	if err := path.Resolve(templatePath, path.NewLoopDetectingScopeWalker(mrc.virtualRootScopeWalkerFactory.New(templateFileResolver))); err != nil {
 		return nil, fmt.Errorf("cannot resolve template %#v: %w", templatePath.GetUNIXString(), err)
+	}
+	if err := templateFileResolver.checkSymlinksStayInInputRoot(templatePath); err != nil {
+		return nil, err
 	}
 	f, err := templateFileResolver.getFile()
 	if err != nil {
