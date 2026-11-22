@@ -173,3 +173,46 @@ bazel_dep(name = "a", repo_name = None, dev_dependency = True)
 		require.Empty(t, handler.dependencies)
 	})
 }
+
+func TestResolveModuleToCheck(t *testing.T) {
+	newModule := func(name string) label.Module {
+		return util.Must(label.NewModule(name))
+	}
+	newVersion := func(version string) *label.ModuleVersion {
+		v := util.Must(label.NewModuleVersion(version))
+		return &v
+	}
+	root := newModule("root")
+
+	t.Run("NoOverride", func(t *testing.T) {
+		dependency, err := resolveModuleToCheck(nil, nil, root, newModule("a"), newVersion("1.0"))
+		require.NoError(t, err)
+		require.Equal(t, moduleToCheck{name: newModule("a"), version: *newVersion("1.0")}, dependency)
+
+		_, err = resolveModuleToCheck(nil, nil, root, newModule("a"), nil)
+		require.EqualError(t, err, "module root depends on module a without specifying a version number, while no override is in place")
+	})
+
+	t.Run("SingleVersionOverrideWithVersion", func(t *testing.T) {
+		// single_version_override(version = ...) pins the
+		// module, regardless of the version that is requested.
+		singleVersionOverrides := map[label.Module]singleVersionOverride{
+			newModule("a"): {version: newVersion("1.5")},
+		}
+		for _, requestedVersion := range []*label.ModuleVersion{nil, newVersion("1.0"), newVersion("2.0")} {
+			dependency, err := resolveModuleToCheck(nil, singleVersionOverrides, root, newModule("a"), requestedVersion)
+			require.NoError(t, err)
+			require.Equal(t, moduleToCheck{name: newModule("a"), version: *newVersion("1.5")}, dependency)
+		}
+	})
+
+	t.Run("SingleVersionOverrideWithoutVersion", func(t *testing.T) {
+		// Without a version, minimal version selection applies.
+		singleVersionOverrides := map[label.Module]singleVersionOverride{
+			newModule("a"): {registry: "https://registry.example.com"},
+		}
+		dependency, err := resolveModuleToCheck(nil, singleVersionOverrides, root, newModule("a"), newVersion("1.0"))
+		require.NoError(t, err)
+		require.Equal(t, moduleToCheck{name: newModule("a"), version: *newVersion("1.0")}, dependency)
+	})
+}

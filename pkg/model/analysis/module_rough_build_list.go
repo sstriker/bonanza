@@ -227,6 +227,42 @@ func parseOverridesList(overridesList []*model_analysis_pb.OverridesListModule) 
 	return modules, nil
 }
 
+// singleVersionOverride contains the properties of a call to
+// single_version_override() that affect module resolution.
+type singleVersionOverride struct {
+	// If set, the module is pinned to this version, regardless of
+	// the versions requested by modules depending on it.
+	version *label.ModuleVersion
+	// If set, the module is obtained from this registry, instead of
+	// the ones provided to --registry.
+	registry string
+}
+
+func parseSingleVersionOverrides(moduleOverrides []*model_analysis_pb.ModuleOverride) (map[label.Module]singleVersionOverride, error) {
+	overrides := map[label.Module]singleVersionOverride{}
+	for _, moduleOverride := range moduleOverrides {
+		override := moduleOverride.GetDefinition().GetSingleVersion()
+		if override == nil {
+			continue
+		}
+		moduleName, err := label.NewModule(moduleOverride.Name)
+		if err != nil {
+			return nil, fmt.Errorf("invalid module name %#v: %w", moduleOverride.Name, err)
+		}
+		var parsedOverride singleVersionOverride
+		if override.Version != "" {
+			version, err := label.NewModuleVersion(override.Version)
+			if err != nil {
+				return nil, fmt.Errorf("invalid version %#v in single version override of module %#v: %w", override.Version, moduleOverride.Name, err)
+			}
+			parsedOverride.version = &version
+		}
+		parsedOverride.registry = override.Registry
+		overrides[moduleName] = parsedOverride
+	}
+	return overrides, nil
+}
+
 func getModuleDotBazelURL(registryURL string, module label.Module, moduleVersion label.ModuleVersion) (string, error) {
 	return url.JoinPath(registryURL, "modules", module.String(), moduleVersion.String(), dotbazel.ModuleFilename)
 }
@@ -234,9 +270,17 @@ func getModuleDotBazelURL(registryURL string, module label.Module, moduleVersion
 // resolveModuleToCheck determines which version of a module needs to
 // be processed, given the version that is provided to bazel_dep() and
 // the overrides that are in place.
-func resolveModuleToCheck(modulesWithOverrides map[label.Module]OverrideVersions, moduleName, dependencyName label.Module, dependencyVersion *label.ModuleVersion) (moduleToCheck, error) {
+func resolveModuleToCheck(modulesWithOverrides map[label.Module]OverrideVersions, singleVersionOverrides map[label.Module]singleVersionOverride, moduleName, dependencyName label.Module, dependencyVersion *label.ModuleVersion) (moduleToCheck, error) {
 	dependency := moduleToCheck{name: dependencyName}
 	if versions, ok := modulesWithOverrides[dependencyName]; !ok {
+		if override := singleVersionOverrides[dependencyName]; override.version != nil {
+			// single_version_override() pins the module to
+			// an exact version, regardless of the version
+			// that is requested.
+			dependency.version = *override.version
+			return dependency, nil
+		}
+
 		// No override exists, meaning we need to check an
 		// exact version.
 		if dependencyVersion == nil {
@@ -259,9 +303,10 @@ func resolveModuleToCheck(modulesWithOverrides map[label.Module]OverrideVersions
 func (baseComputer[TReference, TMetadata]) ComputeModuleRoughBuildListValue(ctx context.Context, key *model_analysis_pb.ModuleRoughBuildList_Key, e ModuleRoughBuildListEnvironment[TReference, TMetadata]) (PatchedModuleRoughBuildListValue[TMetadata], error) {
 	rootModuleValue := e.GetRootModuleValue(&model_analysis_pb.RootModule_Key{})
 	modulesWithOverridesValue := e.GetModulesWithOverridesValue(&model_analysis_pb.ModulesWithOverrides_Key{})
+	modulesWithRemoteOverridesValue := e.GetModulesWithRemoteOverridesValue(&model_analysis_pb.ModulesWithRemoteOverrides_Key{})
 	registryURLsValue := e.GetModuleRegistryUrlsValue(&model_analysis_pb.ModuleRegistryUrls_Key{})
 	fileReader, gotFileReader := e.GetFileAccessParametersObject(&model_analysis_pb.FileAccessParameters_Key{})
-	if !rootModuleValue.IsSet() || !modulesWithOverridesValue.IsSet() || !registryURLsValue.IsSet() || !gotFileReader {
+	if !rootModuleValue.IsSet() || !modulesWithOverridesValue.IsSet() || !modulesWithRemoteOverridesValue.IsSet() || !registryURLsValue.IsSet() || !gotFileReader {
 		return PatchedModuleRoughBuildListValue[TMetadata]{}, evaluation.ErrMissingDependency
 	}
 
@@ -276,6 +321,14 @@ func (baseComputer[TReference, TMetadata]) ComputeModuleRoughBuildListValue(ctx 
 	// For these we should not attempt to load MODULE.bazel files
 	// from Bazel Central Registry (BCR).
 	modulesWithOverrides, err := parseOverridesList(modulesWithOverridesValue.Message.OverridesList)
+	if err != nil {
+		return PatchedModuleRoughBuildListValue[TMetadata]{}, err
+	}
+
+	// Modules for which single_version_override() is used are
+	// still obtained from a registry, but may need to be pinned
+	// to a specific version, or be obtained from another registry.
+	singleVersionOverrides, err := parseSingleVersionOverrides(modulesWithRemoteOverridesValue.Message.ModuleOverrides)
 	if err != nil {
 		return PatchedModuleRoughBuildListValue[TMetadata]{}, err
 	}
@@ -322,7 +375,11 @@ ProcessModule:
 			// don't want to download the full sources just
 			// yet, as there is no guarantee that this is
 			// the definitive version to load.
-			for _, registryURL := range registryURLs {
+			moduleRegistryURLs := registryURLs
+			if registry := singleVersionOverrides[module.name].registry; registry != "" {
+				moduleRegistryURLs = []string{registry}
+			}
+			for _, registryURL := range moduleRegistryURLs {
 				moduleFileURL, err := getModuleDotBazelURL(registryURL, module.name, module.version)
 				if err != nil {
 					return PatchedModuleRoughBuildListValue[TMetadata]{}, fmt.Errorf("failed to construct URL for module %s with version %s in registry %#v: %w", module.name, module.version, registryURL, err)
@@ -392,7 +449,7 @@ ProcessModule:
 		}
 
 		for _, dep := range handler.dependencies {
-			dependency, err := resolveModuleToCheck(modulesWithOverrides, module.name, dep.module, dep.version)
+			dependency, err := resolveModuleToCheck(modulesWithOverrides, singleVersionOverrides, module.name, dep.module, dep.version)
 			if err != nil {
 				return PatchedModuleRoughBuildListValue[TMetadata]{}, err
 			}
