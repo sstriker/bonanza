@@ -2413,7 +2413,7 @@ func (mrc *moduleOrRepositoryContext[TReference, TMetadata]) doFile(thread *eval
 	return eval.None, nil
 }
 
-func (moduleOrRepositoryContext[TReference, TMetadata]) doGetenv(thread *eval.Thread, b *eval.Builtin, args eval.Args) (eval.Value, error) {
+func (mrc *moduleOrRepositoryContext[TReference, TMetadata]) doGetenv(thread *eval.Thread, b *eval.Builtin, args eval.Args) (eval.Value, error) {
 	var name string
 	var defaultValue *string
 	if err := eval.UnpackArgs(
@@ -2424,7 +2424,15 @@ func (moduleOrRepositoryContext[TReference, TMetadata]) doGetenv(thread *eval.Th
 		return nil, err
 	}
 
-	// TODO: Provide a real implementation!
+	mrc.maybeGetRepoPlatform()
+	if !mrc.repoPlatform.IsSet() {
+		return nil, evaluation.ErrMissingDependency
+	}
+	for _, entry := range mrc.repoPlatform.Message.RepositoryOsEnviron {
+		if entry.Name == name {
+			return eval.String(entry.Value), nil
+		}
+	}
 	if defaultValue == nil {
 		return eval.None, nil
 	}
