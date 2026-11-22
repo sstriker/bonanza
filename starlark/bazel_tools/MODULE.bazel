@@ -1,13 +1,27 @@
 module(name = "bazel_tools")
 
-bazel_dep(name = "apple_support")
-bazel_dep(name = "bazel_skylib")
-bazel_dep(name = "platforms")
-bazel_dep(name = "protobuf")
-bazel_dep(name = "rules_cc")
-bazel_dep(name = "rules_java")
-bazel_dep(name = "rules_python")
-bazel_dep(name = "rules_shell")
+# Versions match the ones used by Bazel 9.3.3's bazel_tools module, so
+# that version selection yields the same results as Bazel. The only
+# exception is apple_support, for which Bazel uses 2.5.2. Versions
+# prior to 2.6.0 load @bazel_tools//tools/osx:xcode_configure.bzl,
+# while this module uses the xcode_configure module extension from
+# @apple_support//xcode:xcode_configure.bzl, which was added in 2.6.0
+# (2.6.1 being the first such version in the Bazel Central Registry).
+bazel_dep(name = "apple_support", version = "2.6.1")
+bazel_dep(name = "bazel_skylib", version = "1.7.1")
+bazel_dep(name = "platforms", version = "1.0.0")
+bazel_dep(name = "protobuf", version = "33.4")
+bazel_dep(name = "rules_cc", version = "0.2.17")
+bazel_dep(name = "rules_java", version = "9.1.0")
+bazel_dep(name = "rules_python", version = "1.7.0")
+bazel_dep(name = "rules_shell", version = "0.6.1")
+
+# Minimum versions that Bazel 9.3.3 enforces for modules that are part
+# of the dependency graph, due to incompatibilities with older versions.
+bazel_dep(name = "abseil-cpp", version = "20250814.1", repo_name = None)
+bazel_dep(name = "bazel_features", version = "1.42.1", repo_name = None)
+bazel_dep(name = "rules_apple", version = "4.1.0", repo_name = None)
+bazel_dep(name = "rules_swift", version = "3.1.2", repo_name = None)
 
 xcode_configure = use_extension("@apple_support//xcode:xcode_configure.bzl", "xcode_configure_extension")
 use_repo(xcode_configure, "local_config_xcode")
