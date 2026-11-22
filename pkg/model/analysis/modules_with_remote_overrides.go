@@ -76,14 +76,6 @@ type overrideExtractingModuleDotBazelHandler[TReference object.BasicReference, T
 	patcher              *model_core.ReferenceMessagePatcher[TMetadata]
 }
 
-func prefixToUNIXString(stripPrefix path.Parser) (string, error) {
-	p, scopeWalker := path.EmptyBuilder.Join(path.VoidScopeWalker)
-	if err := path.Resolve(stripPrefix, scopeWalker); err != nil {
-		return "", err
-	}
-	return p.GetUNIXString(), nil
-}
-
 func stringersToStrings[E fmt.Stringer, T ~[]E](slice T) []string {
 	strs := make([]string, len(slice))
 	for idx := range slice {
