@@ -386,6 +386,16 @@ ProcessModule:
 		); err != nil {
 			return PatchedModuleRoughBuildListValue[TMetadata]{}, formatStarlarkError(err)
 		}
+		if module.name != bazelToolsModule {
+			// Every module implicitly depends on
+			// "bazel_tools". Its dependencies need to take
+			// part in version selection, as they are
+			// visited when processing MODULE.bazel files of
+			// all modules in the final build list.
+			handler.dependencies = append(handler.dependencies, bazelDep{
+				module: bazelToolsModule,
+			})
+		}
 
 		if buildListEntry != nil {
 			buildList.Slice = append(buildList.Slice, buildListEntry)
