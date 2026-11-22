@@ -814,6 +814,102 @@ func TestParseCommandAndArguments(t *testing.T) {
 		})
 	})
 
+	t.Run("NativeBuildOptions", func(t *testing.T) {
+		nativeOption := func(name string) label.AbsoluteLabel {
+			return label.MustNewAbsoluteLabel("@bazel_tools//command_line_option:" + name)
+		}
+
+		t.Run("Success", func(t *testing.T) {
+			// Flags corresponding to build settings in
+			// @bazel_tools//command_line_option are converted
+			// to build setting overrides. Non-Boolean flags
+			// may consume the next argument as their value,
+			// while Boolean flags may be negated.
+			command, err := arguments.ParseCommandAndArguments(
+				arguments.ConfigurationDirectives{
+					"build": [][]string{
+						{"--copt=-O2", "--define", "FOO=bar"},
+					},
+					"common": [][]string{
+						{"--features=layering_check"},
+					},
+				},
+				"linux",
+				[]string{
+					"build",
+					"-c", "opt",
+					"--copt", "-g",
+					"--compilation_mode=dbg",
+					"--stamp",
+					"--nostamp",
+					"--incompatible_strict_action_env=no",
+					"//...",
+				},
+			)
+			require.NoError(t, err)
+			require.Equal(t, []arguments.BuildSettingOverride{
+				{Label: nativeOption("features"), Value: "layering_check"},
+				{Label: nativeOption("copt"), Value: "-O2"},
+				{Label: nativeOption("define"), Value: "FOO=bar"},
+				{Label: nativeOption("compilation_mode"), Value: "opt"},
+				{Label: nativeOption("copt"), Value: "-g"},
+				{Label: nativeOption("compilation_mode"), Value: "dbg"},
+				{Label: nativeOption("stamp"), Value: "true"},
+				{Label: nativeOption("stamp"), Value: "false"},
+				{Label: nativeOption("incompatible_strict_action_env"), Value: "false"},
+			}, command.(*arguments.BuildCommand).BuildSettingOverrides)
+			require.Equal(t, []string{"//..."}, command.(*arguments.BuildCommand).Arguments)
+		})
+
+		t.Run("MissingValue", func(t *testing.T) {
+			_, err := arguments.ParseCommandAndArguments(
+				arguments.ConfigurationDirectives{},
+				"linux",
+				[]string{"build", "--copt"},
+			)
+			require.EqualError(t, err, "flag --copt expects a value")
+
+			_, err = arguments.ParseCommandAndArguments(
+				arguments.ConfigurationDirectives{},
+				"linux",
+				[]string{"build", "-c"},
+			)
+			require.EqualError(t, err, "flag -c expects a value")
+		})
+
+		t.Run("NegatedWithValue", func(t *testing.T) {
+			_, err := arguments.ParseCommandAndArguments(
+				arguments.ConfigurationDirectives{},
+				"linux",
+				[]string{"build", "--nostamp=true"},
+			)
+			require.EqualError(t, err, "flag --nostamp does not take a value")
+		})
+
+		t.Run("NotApplicable", func(t *testing.T) {
+			_, err := arguments.ParseCommandAndArguments(
+				arguments.ConfigurationDirectives{},
+				"linux",
+				[]string{"version", "--copt=-O2"},
+			)
+			require.EqualError(t, err, "flag --copt does not apply to this command")
+		})
+
+		t.Run("IgnoredInCommonDirective", func(t *testing.T) {
+			command, err := arguments.ParseCommandAndArguments(
+				arguments.ConfigurationDirectives{
+					"common": [][]string{
+						{"--copt=-O2", "--nostamp", "--compilation_mode", "opt"},
+					},
+				},
+				"linux",
+				[]string{"version"},
+			)
+			require.NoError(t, err)
+			require.Empty(t, command.(*arguments.VersionCommand).BuildSettingOverrides)
+		})
+	})
+
 	t.Run("UserDefinedBuildSettings", func(t *testing.T) {
 		t.Run("Success", func(t *testing.T) {
 			command, err := arguments.ParseCommandAndArguments(

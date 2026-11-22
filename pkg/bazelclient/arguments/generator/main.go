@@ -15,6 +15,52 @@ type flag struct {
 	flagType    flagType
 }
 
+type nativeBuildOption struct {
+	name   string
+	isBool bool
+}
+
+// nativeBuildOptionShortNames contains the short names of native
+// build options, using the same names as Bazel.
+var nativeBuildOptionShortNames = map[string]string{
+	"compilation_mode": "c",
+}
+
+// addNativeBuildOptions adds flags for all native build options that
+// are not declared explicitly to the "build" command, so that they are
+// converted to overrides of @bazel_tools//command_line_option build
+// settings.
+func addNativeBuildOptions() {
+	declaredFlags := map[string]struct{}{}
+	for _, f := range commonFlags {
+		declaredFlags[f.longName] = struct{}{}
+	}
+	for _, c := range commands {
+		for _, f := range c.flags {
+			declaredFlags[f.longName] = struct{}{}
+		}
+	}
+
+	buildCommand := commands["build"]
+	for _, option := range nativeBuildOptions {
+		if _, ok := declaredFlags[option.name]; ok {
+			continue
+		}
+		f := flag{
+			longName:    option.name,
+			shortName:   nativeBuildOptionShortNames[option.name],
+			description: "Sets the value of @bazel_tools//command_line_option:" + option.name + ".",
+		}
+		if option.isBool {
+			f.flagType = boolBuildSettingFlagType{}
+		} else {
+			f.flagType = buildSettingFlagType{}
+		}
+		buildCommand.flags = append(buildCommand.flags, f)
+	}
+	commands["build"] = buildCommand
+}
+
 type command struct {
 	ancestor       string
 	flags          []flag
@@ -36,8 +82,11 @@ func toSymbolName(s string, public bool) string {
 }
 
 func main() {
+	addNativeBuildOptions()
+
 	fmt.Println("package arguments")
 	fmt.Println("import (")
+	fmt.Println("\"strconv\"")
 	fmt.Println("\"strings\"")
 	fmt.Println("")
 	fmt.Println("\"bonanza.build/pkg/label\"")

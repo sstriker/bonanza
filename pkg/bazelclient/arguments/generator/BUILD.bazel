@@ -6,6 +6,7 @@ go_library(
         "definitions.go",
         "flag_type.go",
         "main.go",
+        "native_build_options.go",
     ],
     importpath = "bonanza.build/pkg/bazelclient/arguments/generator",
     visibility = ["//visibility:private"],
