@@ -444,6 +444,61 @@ func (d *changeTrackingDirectory[TReference, TMetadata]) setSymlink(loadOptions 
 	return nil
 }
 
+// overlayDirectory recursively copies the contents of a given
+// changeTrackingDirectory into an already existing one. Unlike
+// mergeDirectory(), files, symbolic links and directories that already
+// exist are replaced, except if both sides are directories, in which
+// case their contents are overlaid recursively. This matches the
+// behavior of extracting an archive into an existing directory.
+func (d *changeTrackingDirectory[TReference, TMetadata]) overlayDirectory(other *changeTrackingDirectory[TReference, TMetadata], options *changeTrackingDirectoryLoadOptions[TReference]) error {
+	if err := other.maybeLoadContents(options); err != nil {
+		return err
+	}
+	for name, f := range other.files {
+		if err := d.setFile(options, name, f); err != nil {
+			return err
+		}
+	}
+	for name, target := range other.symlinks {
+		if err := d.setSymlink(options, name, target); err != nil {
+			return err
+		}
+	}
+	for name, otherChild := range other.directories {
+		if child, ok := d.directories[name]; ok {
+			if err := child.overlayDirectory(otherChild, options); err != nil {
+				return err
+			}
+		} else if err := d.setDirectory(options, name, otherChild); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// newChangeTrackingDirectoryFromArchive converts the in-memory
+// representation of an extracted archive to a changeTrackingDirectory,
+// so that it can be placed in the input root of a module extension or
+// repository rule.
+func newChangeTrackingDirectoryFromArchive[TReference object.BasicReference, TMetadata model_core.ReferenceMetadata](ad *archiveDirectory[TReference]) *changeTrackingDirectory[TReference, TMetadata] {
+	d := &changeTrackingDirectory[TReference, TMetadata]{}
+	for name, child := range ad.directories {
+		d.setDirectorySimple(name, newChangeTrackingDirectoryFromArchive[TReference, TMetadata](child))
+	}
+	for name, f := range ad.files {
+		d.setFileSimple(name, &changeTrackingFile[TReference, TMetadata]{
+			isExecutable: f.isExecutable,
+			contents: unmodifiedFileContents[TReference, TMetadata]{
+				contents: f.contents,
+			},
+		})
+	}
+	for name, target := range ad.symlinks {
+		d.setSymlinkSimple(name, target)
+	}
+	return d
+}
+
 type changeTrackingDirectoryLoadOptions[TReference any] struct {
 	context                context.Context
 	directoryEntriesReader model_parser.MessageObjectReader[TReference, []*model_filesystem_pb.DirectoryEntry]
@@ -515,6 +570,7 @@ func (f *changeTrackingFile[TReference, TMetadata]) isEqualTo(other *changeTrack
 type changeTrackingFileContents[TReference object.BasicReference, TMetadata model_core.ReferenceMetadata] interface {
 	createFileMerkleTree(ctx context.Context, options *capturableChangeTrackingDirectoryOptions[TReference, TMetadata]) (model_core.PatchedMessage[*model_filesystem_pb.FileContents, TMetadata], error)
 	openRead(ctx context.Context, fileReader *model_filesystem.FileReader[TReference], patchedFiles io.ReaderAt) (io.Reader, error)
+	openReadAt(ctx context.Context, fileReader *model_filesystem.FileReader[TReference], patchedFiles io.ReaderAt) (io.ReaderAt, uint64, error)
 }
 
 type unmodifiedFileContents[TReference object.BasicReference, TMetadata model_core.ReferenceMetadata] struct {
@@ -533,6 +589,14 @@ func (fc unmodifiedFileContents[TReference, TMetadata]) openRead(ctx context.Con
 	return fileReader.FileOpenRead(ctx, entry, 0), nil
 }
 
+func (fc unmodifiedFileContents[TReference, TMetadata]) openReadAt(ctx context.Context, fileReader *model_filesystem.FileReader[TReference], patchedFiles io.ReaderAt) (io.ReaderAt, uint64, error) {
+	entry, err := model_filesystem.NewFileContentsEntryFromProto(fc.contents)
+	if err != nil {
+		return nil, 0, err
+	}
+	return fileReader.FileOpenReadAt(ctx, entry), entry.GetEndBytes(), nil
+}
+
 type patchedFileContents[TReference object.BasicReference, TMetadata model_core.ReferenceMetadata] struct {
 	offsetBytes int64
 	sizeBytes   int64
@@ -549,6 +613,10 @@ func (fc patchedFileContents[TReference, TMetadata]) createFileMerkleTree(ctx co
 
 func (fc patchedFileContents[TReference, TMetadata]) openRead(ctx context.Context, fileReader *model_filesystem.FileReader[TReference], patchedFiles io.ReaderAt) (io.Reader, error) {
 	return io.NewSectionReader(patchedFiles, fc.offsetBytes, fc.sizeBytes), nil
+}
+
+func (fc patchedFileContents[TReference, TMetadata]) openReadAt(ctx context.Context, fileReader *model_filesystem.FileReader[TReference], patchedFiles io.ReaderAt) (io.ReaderAt, uint64, error) {
+	return io.NewSectionReader(patchedFiles, fc.offsetBytes, fc.sizeBytes), uint64(fc.sizeBytes), nil
 }
 
 type changeTrackingDirectoryResolver[TReference object.BasicReference, TMetadata model_core.ReferenceMetadata] struct {
@@ -1500,7 +1568,7 @@ func newRepositoryOS[TReference object.BasicReference, TMetadata model_core.Refe
 }
 
 type moduleOrRepositoryContextEnvironment[TReference object.BasicReference, TMetadata model_core.ReferenceMetadata] interface {
-	model_core.ObjectCapturer[TReference, TMetadata]
+	model_core.ObjectManager[TReference, TMetadata]
 
 	ActionEncodersObjectGetter[TReference]
 	ActionResultValueGetter[TReference, TMetadata]
@@ -2339,9 +2407,121 @@ func (mrc *moduleOrRepositoryContext[TReference, TMetadata]) doExecute(thread *e
 	}), nil
 }
 
-func (moduleOrRepositoryContext[TReference, TMetadata]) doExtract(thread *eval.Thread, b *eval.Builtin, args eval.Args) (eval.Value, error) {
-	// TODO: Implement.
-	return nil, errors.New("repository_ctx.extract() has not been implemented yet")
+func (mrc *moduleOrRepositoryContext[TReference, TMetadata]) doExtract(thread *eval.Thread, b *eval.Builtin, args eval.Args) (eval.Value, error) {
+	mrc.maybeGetDirectoryReaders()
+	mrc.maybeGetFileCreationParameters()
+	mrc.maybeGetFileReader()
+	stableInputRootPathError := mrc.maybeGetStableInputRootPath()
+	if mrc.directoryLoadOptions == nil || mrc.fileCreationParameters == nil || mrc.fileReader == nil {
+		return nil, evaluation.ErrMissingDependency
+	}
+	if stableInputRootPathError != nil {
+		return nil, stableInputRootPathError
+	}
+
+	if len(args.Positional) > 3 {
+		return nil, fmt.Errorf("%s: got %d positional arguments, want at most 3", b.Name(), len(args.Positional))
+	}
+	var archive *model_starlark.BarePath
+	output := mrc.defaultWorkingDirectoryPath
+	var stripPrefix path.Parser = &path.EmptyBuilder
+	var renameFiles map[string]string
+	typeStr := ""
+	watchArchive := "auto"
+	if err := eval.UnpackArgs(
+		thread, b.Name(), args,
+		"archive", unpack.Bind(&archive, mrc.pathUnpackerInto),
+		"output?", unpack.Bind(&output, mrc.pathUnpackerInto),
+		"strip_prefix?", unpack.Bind(&stripPrefix, unpack.PathParser(path.UNIXFormat)),
+		"rename_files?", unpack.Bind(&renameFiles, unpack.Dict(unpack.String, unpack.String)),
+		"type?", unpack.Bind(&typeStr, unpack.String),
+		// Changes to files in the input root are always
+		// tracked, so this parameter is a no-op.
+		"watch_archive?", unpack.Bind(&watchArchive, unpack.String),
+	); err != nil {
+		return nil, err
+	}
+
+	typeToMatch := archive.GetUNIXString()
+	if typeStr != "" {
+		typeToMatch = "." + typeStr
+	}
+	archiveFormat, ok := inferArchiveFormatFromURL(typeToMatch)
+	if !ok {
+		return nil, fmt.Errorf("cannot derive archive format from file extension of %#v", typeToMatch)
+	}
+
+	// Open the archive.
+	r := &changeTrackingDirectoryExistingFileResolver[TReference, TMetadata]{
+		loadOptions: mrc.directoryLoadOptions,
+		stack:       util.NewNonEmptyStack(mrc.inputRootDirectory),
+	}
+	if err := path.Resolve(archive, mrc.virtualRootScopeWalkerFactory.New(r)); err != nil {
+		return nil, fmt.Errorf("cannot resolve %#v: %w", archive.GetUNIXString(), err)
+	}
+	if !r.gotScope {
+		return nil, fmt.Errorf("archive %#v is not located in the input root", archive.GetUNIXString())
+	}
+	archiveFile, err := r.getFile()
+	if err != nil {
+		return nil, fmt.Errorf("cannot get file %#v: %w", archive.GetUNIXString(), err)
+	}
+	sequentialReader, err := archiveFile.contents.openRead(mrc.context, mrc.fileReader, mrc.patchedFiles)
+	if err != nil {
+		return nil, fmt.Errorf("failed to open file %#v: %w", archive.GetUNIXString(), err)
+	}
+	randomAccessReader, sizeBytes, err := archiveFile.contents.openReadAt(mrc.context, mrc.fileReader, mrc.patchedFiles)
+	if err != nil {
+		return nil, fmt.Errorf("failed to open file %#v: %w", archive.GetUNIXString(), err)
+	}
+
+	// Extract the archive, storing the contents of files as Merkle
+	// trees.
+	fileMerkleTreeCapturer := model_filesystem.NewSimpleFileMerkleTreeCapturer(mrc.environment)
+	extractedDirectory, err := extractArchive(
+		archiveFormat,
+		sequentialReader,
+		randomAccessReader,
+		sizeBytes,
+		renameFiles,
+		func(r io.Reader) (model_core.Message[*model_filesystem_pb.FileContents, TReference], error) {
+			fileContents, err := model_filesystem.CreateFileMerkleTree(mrc.context, mrc.fileCreationParameters, r, fileMerkleTreeCapturer)
+			if err != nil {
+				return model_core.Message[*model_filesystem_pb.FileContents, TReference]{}, err
+			}
+			return model_core.Unpatch(mrc.environment, fileContents).Decay(), nil
+		},
+		func(*model_analysis_pb.HttpArchiveContents_Progress) {},
+	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to extract %#v: %w", archive.GetUNIXString(), err)
+	}
+
+	// Apply strip_prefix.
+	rootDirectoryResolver := changeTrackingDirectoryResolver[TReference, TMetadata]{
+		loadOptions: mrc.directoryLoadOptions,
+		stack: util.NewNonEmptyStack(
+			newChangeTrackingDirectoryFromArchive[TReference, TMetadata](extractedDirectory),
+		),
+	}
+	if err := path.Resolve(stripPrefix, path.NewRelativeScopeWalker(&rootDirectoryResolver)); err != nil {
+		return nil, fmt.Errorf("failed to strip prefix from contents of %#v: %w", archive.GetUNIXString(), err)
+	}
+
+	// Place the contents of the archive in the output directory,
+	// leaving any existing files that are not part of the archive
+	// in place.
+	outputResolver := &changeTrackingDirectoryNewDirectoryResolver[TReference, TMetadata]{
+		loadOptions: mrc.directoryLoadOptions,
+		stack:       util.NewNonEmptyStack(mrc.inputRootDirectory),
+	}
+	if err := path.Resolve(output, mrc.virtualRootScopeWalkerFactory.New(outputResolver)); err != nil {
+		return nil, fmt.Errorf("cannot resolve %#v: %w", output.GetUNIXString(), err)
+	}
+	if err := outputResolver.stack.Peek().overlayDirectory(rootDirectoryResolver.stack.Peek(), mrc.directoryLoadOptions); err != nil {
+		return nil, fmt.Errorf("failed to extract %#v into %#v: %w", archive.GetUNIXString(), output.GetUNIXString(), err)
+	}
+	return eval.None, nil
 }
 
 func (mrc *moduleOrRepositoryContext[TReference, TMetadata]) doFile(thread *eval.Thread, b *eval.Builtin, args eval.Args) (eval.Value, error) {
