@@ -3,6 +3,8 @@ package starlark
 import (
 	"errors"
 	"fmt"
+	"maps"
+	"slices"
 	"strings"
 
 	pg_label "bonanza.build/pkg/label"
@@ -46,18 +48,60 @@ type ExistingRulesResolver[TReference any] interface {
 	GetTestSuiteTestReader() model_parser.MessageObjectReader[TReference, []*model_starlark_pb.TestSuite_Test]
 }
 
-func getExistingRulesResolver[TReference any](thread *eval.Thread) (ExistingRulesResolver[TReference], error) {
+var errExistingRulesUnavailable = errors.New("existing rules can only be obtained from within finalizers and module extensions")
+
+func getExistingRulesResolver[TReference any](thread *eval.Thread) (ExistingRulesResolver[TReference], bool) {
 	existingRulesResolver := thread.Local(ExistingRulesResolverKey)
 	if existingRulesResolver == nil {
-		return nil, errors.New("existing rules can only be obtained from within finalizers")
+		return nil, false
 	}
-	return existingRulesResolver.(ExistingRulesResolver[TReference]), nil
+	return existingRulesResolver.(ExistingRulesResolver[TReference]), true
+}
+
+// getModuleExtensionRepoRegistrar returns the RepoRegistrar of the
+// module extension that is being evaluated, if any. Like Bazel,
+// native.existing_rule() and native.existing_rules() can be called
+// from within module extensions, in which case they return the repos
+// that the module extension declared so far. This is commonly used to
+// declare repos conditionally (e.g., "if not
+// native.existing_rule(name): http_archive(name = name, ...)").
+func getModuleExtensionRepoRegistrar[TMetadata model_core.ReferenceMetadata](thread *eval.Thread) (*RepoRegistrar[TMetadata], bool) {
+	repoRegistrar, ok := thread.Local(RepoRegistrarKey).(*RepoRegistrar[TMetadata])
+	return repoRegistrar, ok
+}
+
+// newExistingRepo returns the value that native.existing_rule() and
+// native.existing_rules() return for a repo declared by a module
+// extension. Unlike Bazel, it only contains the name of the repo and
+// the name of its repository rule, as opposed to all attributes.
+func newExistingRepo[TMetadata model_core.ReferenceMetadata](thread *eval.Thread, name string, repo model_core.PatchedMessage[*model_starlark_pb.Repo, TMetadata]) (eval.Value, error) {
+	kind := repo.Message.GetDefinition().GetRepositoryRuleIdentifier()
+	kind = kind[strings.LastIndexByte(kind, '%')+1:]
+	return eval.NewImmutableDict(thread, [][2]eval.Value{
+		{eval.String("kind"), eval.String(kind)},
+		{eval.String("name"), eval.String(name)},
+	})
 }
 
 func nativeExistingRule[TReference object.BasicReference, TMetadata model_core.ReferenceMetadata](thread *eval.Thread, b *eval.Builtin, args eval.Args) (eval.Value, error) {
-	existingRulesResolver, err := getExistingRulesResolver[TReference](thread)
-	if err != nil {
-		return nil, err
+	existingRulesResolver, ok := getExistingRulesResolver[TReference](thread)
+	if !ok {
+		repoRegistrar, ok := getModuleExtensionRepoRegistrar[TMetadata](thread)
+		if !ok {
+			return nil, errExistingRulesUnavailable
+		}
+		var name string
+		if err := eval.UnpackArgs(
+			thread, b.Name(), args,
+			"name", unpack.Bind(&name, unpack.String),
+		); err != nil {
+			return nil, err
+		}
+		repo, ok := repoRegistrar.repos[name]
+		if !ok {
+			return eval.None, nil
+		}
+		return newExistingRepo(thread, name, repo)
 	}
 	var name pg_label.TargetName
 	if err := eval.UnpackArgs(
@@ -85,9 +129,10 @@ func nativeExistingRule[TReference object.BasicReference, TMetadata model_core.R
 }
 
 func nativeExistingRules[TReference object.BasicReference, TMetadata model_core.ReferenceMetadata](thread *eval.Thread, b *eval.Builtin, args eval.Args) (eval.Value, error) {
-	existingRulesResolver, err := getExistingRulesResolver[TReference](thread)
-	if err != nil {
-		return nil, err
+	existingRulesResolver, gotExistingRulesResolver := getExistingRulesResolver[TReference](thread)
+	repoRegistrar, gotRepoRegistrar := getModuleExtensionRepoRegistrar[TMetadata](thread)
+	if !gotExistingRulesResolver && !gotRepoRegistrar {
+		return nil, errExistingRulesUnavailable
 	}
 	omitMacroInternals := false
 	if err := eval.UnpackArgs(
@@ -95,6 +140,18 @@ func nativeExistingRules[TReference object.BasicReference, TMetadata model_core.
 		"omit_macro_internals?", unpack.Bind(&omitMacroInternals, unpack.Bool),
 	); err != nil {
 		return nil, err
+	}
+	if !gotExistingRulesResolver {
+		// Called from within a module extension.
+		existingRepos := make([][2]eval.Value, 0, len(repoRegistrar.repos))
+		for _, name := range slices.Sorted(maps.Keys(repoRegistrar.repos)) {
+			existingRepo, err := newExistingRepo(thread, name, repoRegistrar.repos[name])
+			if err != nil {
+				return nil, err
+			}
+			existingRepos = append(existingRepos, [2]eval.Value{eval.String(name), existingRepo})
+		}
+		return eval.NewImmutableDict(thread, existingRepos)
 	}
 	if omitMacroInternals {
 		return nil, errors.New("omitting targets declared by symbolic macros is not supported")

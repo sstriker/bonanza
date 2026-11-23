@@ -380,8 +380,8 @@ func TestExistingRules(t *testing.T) {
 		// finalizers.
 		thread := newThread(t, nil)
 		_, err := eval.Call(thread, nativeExistingRule, eval.Args{Positional: []eval.Value{eval.String("alias")}})
-		require.EqualError(t, err, "existing rules can only be obtained from within finalizers")
+		require.EqualError(t, err, "existing rules can only be obtained from within finalizers and module extensions")
 		_, err = eval.Call(thread, nativeExistingRules, eval.Args{})
-		require.EqualError(t, err, "existing rules can only be obtained from within finalizers")
+		require.EqualError(t, err, "existing rules can only be obtained from within finalizers and module extensions")
 	})
 }

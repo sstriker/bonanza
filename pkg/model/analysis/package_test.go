@@ -615,7 +615,7 @@ def _impl(name, visibility):
 `, nil)
 
 			_, err := computeMacroInstance(e, "m")
-			require.EqualError(t, err, "macro instance \"m\": Traceback (most recent call last):\n\tFile \"@@rules+//:defs.bzl\", line 3, column 26, in _impl\nError in native.existing_rules: existing rules can only be obtained from within finalizers")
+			require.EqualError(t, err, "macro instance \"m\": Traceback (most recent call last):\n\tFile \"@@rules+//:defs.bzl\", line 3, column 26, in _impl\nError in native.existing_rules: existing rules can only be obtained from within finalizers and module extensions")
 		}
 	})
 
