@@ -51,39 +51,107 @@ func getGlobalsReferencedByFunctions(program *compile.Program) map[string]struct
 // calling CanonicalizeImports(), so that the code of functions can be
 // written to storage.
 func EncodeCompiledProgram[TReference any, TMetadata model_core.ReferenceMetadata](thread *eval.Thread, program *compile.Program, globals map[string]eval.Value, options *ValueEncodingOptions[TReference, TMetadata]) (model_core.PatchedMessage[*model_starlark_pb.CompiledProgram, TMetadata], error) {
-	referencedGlobals := getGlobalsReferencedByFunctions(program)
-	var globalsKeys []string
-	globalsValuesBuilder := NewListBuilder[TReference, TMetadata](options)
-	defer globalsValuesBuilder.Discard()
-	for _, name := range slices.Sorted(maps.Keys(globals)) {
+	sortedNames := slices.Sorted(maps.Keys(globals))
+	identifiers := make(map[string]pg_label.StarlarkIdentifier, len(globals))
+	for _, name := range sortedNames {
 		identifier, err := pg_label.NewStarlarkIdentifier(name)
 		if err != nil {
 			return model_core.PatchedMessage[*model_starlark_pb.CompiledProgram, TMetadata]{}, err
 		}
-		var currentIdentifier *pg_label.CanonicalStarlarkIdentifier
-		if options.CurrentFilename != nil {
-			i := options.CurrentFilename.AppendStarlarkIdentifier(identifier)
-			currentIdentifier = &i
-		}
-		value := globals[name]
-		_, isNamedGlobal := value.(NamedGlobal)
+		identifiers[name] = identifier
+	}
+
+	// Determine which globals need to be persisted. These are the
+	// ones that can be accessed by other files, and the ones that
+	// are referenced by functions declared in the program.
+	referencedGlobals := getGlobalsReferencedByFunctions(program)
+	var pendingNames []string
+	for _, name := range sortedNames {
+		_, isNamedGlobal := globals[name].(NamedGlobal)
 		_, isReferenced := referencedGlobals[name]
-		if isNamedGlobal || isReferenced || identifier.IsPublic() {
-			encodedValue, err := EncodeValue(thread, value, nil, currentIdentifier, options)
+		if isNamedGlobal || isReferenced || identifiers[name].IsPublic() {
+			pendingNames = append(pendingNames, name)
+		}
+	}
+
+	// Values that are defined recursively (e.g., a struct whose
+	// methods are lambdas capturing the struct itself) cannot be
+	// encoded as a tree. Permit function closures to refer to
+	// globals of this file by name instead. If a value is assigned
+	// to multiple globals, use the alphabetically first name.
+	if options.CurrentFilename != nil {
+		gi := &globalIdentifiers{
+			identifiers: map[eval.Value]pg_label.CanonicalStarlarkIdentifier{},
+			referenced:  map[pg_label.CanonicalStarlarkIdentifier]struct{}{},
+		}
+		for _, name := range sortedNames {
+			if value := globals[name]; hasIdentity(value) {
+				if _, ok := gi.identifiers[value]; !ok {
+					gi.identifiers[value] = options.CurrentFilename.AppendStarlarkIdentifier(identifiers[name])
+				}
+			}
+		}
+		newOptions := *options
+		newOptions.globalIdentifiers = gi
+		options = &newOptions
+	}
+
+	// Encode all globals that need to be persisted. Globals that are
+	// referenced by name while encoding need to be persisted as
+	// well, even if they are private.
+	encodedGlobals := map[string]model_core.PatchedMessage[*model_starlark_pb.Value, TMetadata]{}
+	defer func() {
+		for _, encodedValue := range encodedGlobals {
+			encodedValue.Discard()
+		}
+	}()
+	for len(pendingNames) > 0 {
+		for _, name := range pendingNames {
+			if _, ok := encodedGlobals[name]; ok {
+				continue
+			}
+			var currentIdentifier *pg_label.CanonicalStarlarkIdentifier
+			if options.CurrentFilename != nil {
+				i := options.CurrentFilename.AppendStarlarkIdentifier(identifiers[name])
+				currentIdentifier = &i
+			}
+			encodedValue, err := EncodeValue(thread, globals[name], nil, currentIdentifier, options)
 			if err != nil {
 				return model_core.PatchedMessage[*model_starlark_pb.CompiledProgram, TMetadata]{}, fmt.Errorf("global %#v: %w", name, err)
 			}
-			globalsKeys = append(globalsKeys, name)
-			if err := globalsValuesBuilder.PushChild(model_core.NewPatchedMessage(
-				&model_starlark_pb.List_Element{
-					Level: &model_starlark_pb.List_Element_Leaf{
-						Leaf: encodedValue.Message,
-					},
-				},
-				encodedValue.Patcher,
-			)); err != nil {
-				return model_core.PatchedMessage[*model_starlark_pb.CompiledProgram, TMetadata]{}, err
+			encodedGlobals[name] = encodedValue
+		}
+
+		pendingNames = pendingNames[:0]
+		if gi := options.globalIdentifiers; gi != nil {
+			for identifier := range gi.referenced {
+				if name := identifier.GetStarlarkIdentifier().String(); encodedGlobals[name].Message == nil {
+					pendingNames = append(pendingNames, name)
+				}
 			}
+			slices.Sort(pendingNames)
+		}
+	}
+
+	var globalsKeys []string
+	globalsValuesBuilder := NewListBuilder[TReference, TMetadata](options)
+	defer globalsValuesBuilder.Discard()
+	for _, name := range sortedNames {
+		encodedValue, ok := encodedGlobals[name]
+		if !ok {
+			continue
+		}
+		delete(encodedGlobals, name)
+		globalsKeys = append(globalsKeys, name)
+		if err := globalsValuesBuilder.PushChild(model_core.NewPatchedMessage(
+			&model_starlark_pb.List_Element{
+				Level: &model_starlark_pb.List_Element_Leaf{
+					Leaf: encodedValue.Message,
+				},
+			},
+			encodedValue.Patcher,
+		)); err != nil {
+			return model_core.PatchedMessage[*model_starlark_pb.CompiledProgram, TMetadata]{}, err
 		}
 	}
 

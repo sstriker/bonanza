@@ -450,6 +450,7 @@ type Value struct {
 	//	*Value_ExecGroup
 	//	*Value_File
 	//	*Value_Function
+	//	*Value_GlobalReference
 	//	*Value_Int
 	//	*Value_Label
 	//	*Value_List
@@ -599,6 +600,15 @@ func (x *Value) GetFunction() *Function {
 		}
 	}
 	return nil
+}
+
+func (x *Value) GetGlobalReference() string {
+	if x != nil {
+		if x, ok := x.Kind.(*Value_GlobalReference); ok {
+			return x.GlobalReference
+		}
+	}
+	return ""
 }
 
 func (x *Value) GetInt() []byte {
@@ -816,6 +826,10 @@ type Value_Function struct {
 	Function *Function `protobuf:"bytes,10,opt,name=function,proto3,oneof"`
 }
 
+type Value_GlobalReference struct {
+	GlobalReference string `protobuf:"bytes,31,opt,name=global_reference,json=globalReference,proto3,oneof"`
+}
+
 type Value_Int struct {
 	Int []byte `protobuf:"bytes,11,opt,name=int,proto3,oneof"`
 }
@@ -911,6 +925,8 @@ func (*Value_ExecGroup) isValue_Kind() {}
 func (*Value_File) isValue_Kind() {}
 
 func (*Value_Function) isValue_Kind() {}
+
+func (*Value_GlobalReference) isValue_Kind() {}
 
 func (*Value_Int) isValue_Kind() {}
 
@@ -7766,7 +7782,7 @@ const file_bonanza_build_pkg_proto_model_starlark_starlark_proto_rawDesc = "" +
 	"\n" +
 	"first_name\x18\x02 \x01(\v2%.bonanza.model.starlark.Function.NameR\tfirstName\x12%\n" +
 	"\x0efunction_count\x18\x03 \x01(\rR\rfunctionCountB\a\n" +
-	"\x05level\"\x8f\r\n" +
+	"\x05level\"\xbc\r\n" +
 	"\x05Value\x128\n" +
 	"\x06aspect\x18\x01 \x01(\v2\x1e.bonanza.model.starlark.AspectH\x00R\x06aspect\x122\n" +
 	"\x04attr\x18\x02 \x01(\v2\x1c.bonanza.model.starlark.AttrH\x00R\x04attr\x12\x14\n" +
@@ -7779,7 +7795,8 @@ const file_bonanza_build_pkg_proto_model_starlark_starlark_proto_rawDesc = "" +
 	"exec_group\x18\b \x01(\v2!.bonanza.model.starlark.ExecGroupH\x00R\texecGroup\x122\n" +
 	"\x04file\x18\t \x01(\v2\x1c.bonanza.model.starlark.FileH\x00R\x04file\x12>\n" +
 	"\bfunction\x18\n" +
-	" \x01(\v2 .bonanza.model.starlark.FunctionH\x00R\bfunction\x12\x12\n" +
+	" \x01(\v2 .bonanza.model.starlark.FunctionH\x00R\bfunction\x12+\n" +
+	"\x10global_reference\x18\x1f \x01(\tH\x00R\x0fglobalReference\x12\x12\n" +
 	"\x03int\x18\v \x01(\fH\x00R\x03int\x12\x16\n" +
 	"\x05label\x18\f \x01(\tH\x00R\x05label\x122\n" +
 	"\x04list\x18\r \x01(\v2\x1c.bonanza.model.starlark.ListH\x00R\x04list\x125\n" +
@@ -8687,6 +8704,7 @@ func file_bonanza_build_pkg_proto_model_starlark_starlark_proto_init() {
 		(*Value_ExecGroup)(nil),
 		(*Value_File)(nil),
 		(*Value_Function)(nil),
+		(*Value_GlobalReference)(nil),
 		(*Value_Int)(nil),
 		(*Value_Label)(nil),
 		(*Value_List)(nil),

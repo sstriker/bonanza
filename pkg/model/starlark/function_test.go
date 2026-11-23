@@ -568,3 +568,163 @@ SECOND = lambda: "second"
 		require.False(t, proto.Equal(code1[0], code2[0]))
 	})
 }
+
+func TestFunctionStorageRecursiveValues(t *testing.T) {
+	// rules_python's enum.bzl creates structs whose methods are
+	// lambdas that capture the struct itself. As objects in storage
+	// form a tree, the closures of these lambdas need to refer to
+	// the struct by name.
+	filename := util.Must(label.NewCanonicalLabel("@@rules+//:defs.bzl"))
+	source := `
+def enum(methods = {}, **kwargs):
+    self = None
+
+    def get(name, default = None):
+        return getattr(self, name, default)
+
+    bound = {"get": lambda *a, **k: get(*a, **k)}
+    for name, method in methods.items():
+        bound[name] = lambda *a, _method = method, **k: _method(self, *a, **k)
+    self = struct(_members = sorted(kwargs.keys()), **dict(kwargs, **bound))
+    return self
+
+def _from_string(self, s):
+    for member in self._members:
+        if getattr(self, member) == s:
+            return member
+    return None
+
+Color = enum(
+    methods = {"from_string": _from_string},
+    GREEN = "green",
+    RED = "red",
+)
+
+# Aliases resolve to the alphabetically first name.
+Colour = Color
+
+# Enums only bound to private globals are persisted if they are
+# needed to break cycles.
+_Shape = enum(CIRCLE = "circle")
+SHAPES = struct(shape = _Shape)
+
+# Globals that are captured by closures but are acyclic.
+_SUFFIXES = ["!", "?"]
+
+def _make_suffixer():
+    suffixes = _SUFFIXES
+    return lambda s: [s + suffix for suffix in suffixes]
+
+suffixer = _make_suffixer()
+
+def describe():
+    return Color.get("RED") + "/" + Color.from_string("green")
+`
+	f, err := syntax.Parse(filename.String(), []byte(source), syntax.Options{})
+	require.NoError(t, err)
+	bzlFileBuiltins, _ := model_starlark.GetBuiltins[object.LocalReference, model_core.NoopReferenceMetadata]()
+	universe := eval.Universe()
+	m, err := resolve.File(
+		f,
+		&resolve.BzlDialect,
+		func(name string) bool { _, ok := bzlFileBuiltins[name]; return ok },
+		func(name string) bool { _, ok := universe[name]; return ok },
+	)
+	require.NoError(t, err)
+	program := compile.File(f, m)
+	module := eval.NewInMemoryModule(filename.String(), bzlFileBuiltins, nil)
+	require.NoError(t, eval.ExecFile(newTestThread(t), program, module))
+
+	encoder := model_encoding.NewChainedDeterministicBinaryEncoder(nil)
+	store := &inMemoryObjectStore{objects: map[object.LocalReference]*object.Contents{}}
+	encodingOptions := &model_starlark.ValueEncodingOptions[object.LocalReference, model_core.NoopReferenceMetadata]{
+		CurrentFilename:       &filename,
+		Context:               t.Context(),
+		ObjectEncoder:         encoder,
+		ObjectReferenceFormat: util.Must(object.NewReferenceFormat(object_pb.ReferenceFormat_SHA256_V1)),
+		ObjectCapturer:        store,
+		ObjectChunkingParameters: util.Must(chunking.NewParametersFromProto(&model_chunking_pb.Parameters{
+			MinimumSizeBytes: 256 * 1024,
+			HorizonSizeBytes: 2 * 1024 * 1024,
+		}, util.Must(object.NewReferenceFormat(object_pb.ReferenceFormat_SHA256_V1)))),
+	}
+
+	t.Run("NoFilename", func(t *testing.T) {
+		// Without a filename, globals can't be referred to by
+		// name. Cycles should be reported, as opposed to
+		// causing infinite recursion.
+		options := *encodingOptions
+		options.CurrentFilename = nil
+		_, err := model_starlark.EncodeCompiledProgram(newTestThread(t), program, module.Globals(), &options)
+		require.ErrorContains(t, err, "value is defined recursively")
+	})
+
+	encodedProgram, err := model_starlark.EncodeCompiledProgram(newTestThread(t), program, module.Globals(), encodingOptions)
+	require.NoError(t, err)
+	topLevelProgram, _ := encodedProgram.SortAndSetReferences()
+	globals := topLevelProgram.Decay()
+
+	// _Shape is private, but needs to be persisted, as it is
+	// referenced by the closures of SHAPES.shape. _SUFFIXES is
+	// private and captured, but referenced by name as well.
+	require.Equal(t, []string{"Color", "Colour", "SHAPES", "_SUFFIXES", "_Shape", "describe", "enum", "suffixer"}, globals.Message.Globals.Keys)
+
+	decodingOptions := &model_starlark.ValueDecodingOptions[object.LocalReference]{
+		Readers: &model_starlark.ValueReaders[object.LocalReference]{
+			CompiledProgramFunctions: newProtoListReader[model_starlark_pb.CompiledProgram_FunctionEntry](store, encoder),
+			Dict:                     newProtoListReader[model_starlark_pb.Dict_Entry](store, encoder),
+			List:                     newProtoListReader[model_starlark_pb.List_Element](store, encoder),
+		},
+		BzlFileBuiltins: bzlFileBuiltins,
+	}
+	thread := newTestThread(t)
+	thread.SetLocal(model_starlark.ValueDecodingOptionsKey, decodingOptions)
+	thread.SetLocal(model_starlark.CompiledProgramResolverKey, model_starlark.CompiledProgramResolver[object.LocalReference](func(label.CanonicalLabel) (model_core.Message[*model_starlark_pb.CompiledProgram, object.LocalReference], error) {
+		return globals, nil
+	}))
+	var resolvedIdentifiers []string
+	thread.SetLocal(model_starlark.GlobalResolverKey, model_starlark.GlobalResolver[object.LocalReference](func(identifier label.CanonicalStarlarkIdentifier) (model_core.Message[*model_starlark_pb.Value, object.LocalReference], error) {
+		resolvedIdentifiers = append(resolvedIdentifiers, identifier.String())
+		require.Equal(t, filename, identifier.GetCanonicalLabel())
+		return model_starlark.GetStructFieldValue(t.Context(), decodingOptions.Readers.List, model_core.Nested(globals, globals.Message.Globals), identifier.GetStarlarkIdentifier().String())
+	}))
+	decodedGlobals, err := model_starlark.DecodeGlobals[object.LocalReference, model_core.NoopReferenceMetadata](thread, model_core.Nested(globals, globals.Message.Globals), filename)
+	require.NoError(t, err)
+
+	call := func(fn eval.Value, args ...eval.Value) eval.Value {
+		v, err := eval.Call(thread, fn, eval.Args{Positional: args})
+		require.NoError(t, err)
+		return v
+	}
+	attr := func(v eval.Value, name string) eval.Value {
+		a, err := v.(eval.HasAttrs).Attr(thread, name)
+		require.NoError(t, err)
+		return a
+	}
+
+	// Decoding the globals should not have resolved anything, as
+	// closures are decoded lazily.
+	require.Empty(t, resolvedIdentifiers)
+
+	// Methods of the enums should be callable, resolving the
+	// enum that they capture by name.
+	require.Equal(t, eval.String("red"), call(attr(decodedGlobals["Colour"], "get"), eval.String("RED")))
+	require.Equal(t, eval.String("GREEN"), call(attr(decodedGlobals["Color"], "from_string"), eval.String("green")))
+	require.Equal(t, eval.String("circle"), call(attr(attr(decodedGlobals["SHAPES"], "shape"), "get"), eval.String("CIRCLE")))
+	require.Equal(t, eval.String("red/GREEN"), call(decodedGlobals["describe"]))
+	suffixed, err := eval.Repr(thread, call(decodedGlobals["suffixer"], eval.String("a")))
+	require.NoError(t, err)
+	require.Equal(t, `["a!", "a?"]`, suffixed)
+	require.Equal(t, []string{
+		"@@rules+//:defs.bzl%Color",
+		"@@rules+//:defs.bzl%_Shape",
+		"@@rules+//:defs.bzl%_SUFFIXES",
+	}, resolvedIdentifiers)
+
+	// Decoded values should be re-encodable, regardless of
+	// whether file globals can be referenced by name.
+	for _, name := range []string{"Color", "SHAPES"} {
+		_, err := model_starlark.EncodeValue(thread, decodedGlobals[name], nil, nil, encodingOptions)
+		require.NoError(t, err, name)
+	}
+}

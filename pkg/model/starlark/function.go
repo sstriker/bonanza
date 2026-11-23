@@ -65,6 +65,11 @@ func EncodeFunction[TReference any, TMetadata model_core.ReferenceMetadata](thre
 	patcher := model_core.NewReferenceMessagePatcher[TMetadata]()
 	var closure *model_starlark_pb.Function_Closure
 	if len(defaults) > 0 || len(freeVars) > 0 {
+		// Closures are decoded lazily. This makes it possible
+		// to refer to globals of the file being compiled by
+		// name, which breaks cycles in values that are defined
+		// recursively.
+		options := options.withinClosure()
 		closure = &model_starlark_pb.Function_Closure{
 			DefaultParameters: make([]*model_starlark_pb.Function_Closure_DefaultParameter, 0, len(defaults)),
 			FreeVariables:     make([]*model_starlark_pb.Value, 0, len(freeVars)),

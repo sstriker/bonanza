@@ -71,6 +71,13 @@ message Value {
     ExecGroup exec_group = 8;
     File file = 9;
     Function function = 10;
+    // Reference to a global variable declared in a .bzl file, in the
+    // form of a canonical Starlark identifier. These are only emitted
+    // at positions that are decoded lazily (i.e., the default
+    // parameters and free variables of function closures), which
+    // permits encoding values that are defined recursively, such as
+    // structs whose methods are lambdas capturing the struct itself.
+    string global_reference = 31;
     // Integer, encoded as a big-endian two's complement value.
     bytes int = 11;
     string label = 12;
