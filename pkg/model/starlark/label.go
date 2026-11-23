@@ -114,7 +114,10 @@ func (l Label[TReference, TMetadata]) Attr(thread *eval.Thread, name string) (ev
 				return NewLabel[TReference, TMetadata](relName), nil
 			},
 		), nil
-	case "repo_name":
+	case "repo_name", "workspace_name":
+		// workspace_name is a deprecated alias of repo_name
+		// that Bazel 9 still provides. It is used by rules_cc
+		// 0.2.x, amongst others.
 		canonicalLabel, err := l.value.AsCanonical()
 		if err != nil {
 			return nil, err
@@ -154,6 +157,7 @@ var labelAttrNames = []string{
 	"relative",
 	"repo_name",
 	"same_package_label",
+	"workspace_name",
 	"workspace_root",
 }
 
