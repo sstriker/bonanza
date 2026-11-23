@@ -7,6 +7,7 @@ import (
 	"maps"
 	"math"
 	"math/bits"
+	"reflect"
 	"slices"
 
 	pg_label "bonanza.build/pkg/label"
@@ -48,6 +49,83 @@ type ValueEncodingOptions[TReference any, TMetadata model_core.ReferenceMetadata
 	// stored in the same way as file contents, using the provided
 	// parameters.
 	FileCreationParameters *model_filesystem.FileCreationParameters
+
+	// Identifiers of globals of the file that is currently being
+	// compiled, keyed by their values. Only set by
+	// EncodeCompiledProgram() on a private copy of the options. It
+	// is used to encode values that are defined recursively, such
+	// as structs whose methods are lambdas that capture the struct
+	// itself, by emitting references to the globals instead.
+	globalIdentifiers *globalIdentifiers
+
+	// Set while encoding the default parameters and free variables
+	// of a function closure. References to globals are only
+	// emitted at these positions, as closures are decoded lazily.
+	// This guarantees that decoding a global never needs to
+	// resolve the global itself.
+	insideClosure bool
+}
+
+// globalIdentifiers keeps track of the identifiers of the globals of
+// the file that is currently being compiled, keyed by their values.
+type globalIdentifiers struct {
+	identifiers map[eval.Value]pg_label.CanonicalStarlarkIdentifier
+
+	// Globals that were referenced while encoding, which therefore
+	// need to be persisted as part of the compiled program.
+	referenced map[pg_label.CanonicalStarlarkIdentifier]struct{}
+}
+
+// structMarker is implemented by all instantiations of Struct.
+type structMarker interface {
+	isStruct()
+}
+
+// hasIdentity returns true if a Starlark value has an identity that is
+// distinct from its contents. Only such values need to be referenced
+// by name to break cycles. In addition to that, these values can
+// safely be used as map keys, regardless of whether their contents are
+// hashable.
+func hasIdentity(value eval.Value) bool {
+	switch value.(type) {
+	case NamedGlobal:
+		// Values that track their own name, such as rules and
+		// providers, already encode references to themselves.
+		return false
+	case eval.Dict, eval.List, eval.Set, structMarker:
+		t := reflect.TypeOf(value)
+		return t.Kind() == reflect.Pointer && t.Comparable()
+	default:
+		return false
+	}
+}
+
+// lookUpGlobalReference returns the identifier of a global of the
+// file that is currently being compiled that refers to the provided
+// value, if any. References are only returned at positions that are
+// decoded lazily.
+func (o *ValueEncodingOptions[TReference, TMetadata]) lookUpGlobalReference(value eval.Value) (pg_label.CanonicalStarlarkIdentifier, bool) {
+	gi := o.globalIdentifiers
+	if gi == nil || !o.insideClosure || !hasIdentity(value) {
+		return pg_label.CanonicalStarlarkIdentifier{}, false
+	}
+	identifier, ok := gi.identifiers[value]
+	if ok {
+		gi.referenced[identifier] = struct{}{}
+	}
+	return identifier, ok
+}
+
+// withinClosure returns a copy of the options that permits emitting
+// references to globals, which may be used to encode the default
+// parameters and free variables of function closures.
+func (o *ValueEncodingOptions[TReference, TMetadata]) withinClosure() *ValueEncodingOptions[TReference, TMetadata] {
+	if o.globalIdentifiers == nil || o.insideClosure {
+		return o
+	}
+	newOptions := *o
+	newOptions.insideClosure = true
+	return &newOptions
 }
 
 // ComputeListParentNode generates a parent node of a Starlark list that
@@ -139,6 +217,14 @@ type EncodableValue[TReference any, TMetadata model_core.ReferenceMetadata] inte
 // values that are currently being encoded, and should be nil when
 // called on a value that is not contained in another value.
 func EncodeValue[TReference any, TMetadata model_core.ReferenceMetadata](thread *eval.Thread, value eval.Value, path []eval.Value, currentIdentifier *pg_label.CanonicalStarlarkIdentifier, options *ValueEncodingOptions[TReference, TMetadata]) (model_core.PatchedMessage[*model_starlark_pb.Value, TMetadata], error) {
+	if identifier, ok := options.lookUpGlobalReference(value); ok {
+		return model_core.NewSimplePatchedMessage[TMetadata](&model_starlark_pb.Value{
+			Kind: &model_starlark_pb.Value_GlobalReference{
+				GlobalReference: identifier.String(),
+			},
+		}), nil
+	}
+
 	if encodableValue, ok := value.(EncodableValue[TReference, TMetadata]); ok {
 		return encodableValue.EncodeValue(thread, path, currentIdentifier, options)
 	}

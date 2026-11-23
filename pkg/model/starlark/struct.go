@@ -413,6 +413,8 @@ func (s *Struct[TReference, TMetadata]) Encode(thread *eval.Thread, path []eval.
 	})
 }
 
+func (*Struct[TReference, TMetadata]) isStruct() {}
+
 // EncodeValue encodes a Starlark struct value and all of its fields to
 // a Starlark value Protobuf message. This allows it to be written to
 // storage and reloaded later.

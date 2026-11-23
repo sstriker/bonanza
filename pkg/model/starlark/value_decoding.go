@@ -178,6 +178,12 @@ func DecodeValue[TReference object.BasicReference, TMetadata model_core.Referenc
 		return decodeTargetReference[TReference, TMetadata](value, typedValue.TargetReference)
 	case *model_starlark_pb.Value_ToolchainType:
 		return decodeToolchainType[TReference, TMetadata](typedValue.ToolchainType)
+	case *model_starlark_pb.Value_GlobalReference:
+		identifier, err := pg_label.NewCanonicalStarlarkIdentifier(typedValue.GlobalReference)
+		if err != nil {
+			return nil, fmt.Errorf("invalid global reference %#v: %w", typedValue.GlobalReference, err)
+		}
+		return ResolveGlobal[TReference, TMetadata](thread, identifier)
 	case nil:
 		return nil, errors.New("value has no kind")
 	default:
