@@ -9,6 +9,7 @@ import (
 	"log"
 	"maps"
 	"slices"
+	"sort"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -445,6 +446,7 @@ func (rc *RecursiveComputer[TReference, TMetadata]) getOrCreateKeyStateLocked(ke
 			keyReference:      keyReference,
 			keyMessageFetcher: keyMessageFetcher,
 			isLookup:          rc.base.IsLookup(keyTypeURL),
+			debugKeyTypeURL:   keyTypeURL,
 			valueState:        initialValueState[TReference, TMetadata]{},
 			evaluationQueue:   evaluationQueue,
 		}
@@ -1379,6 +1381,7 @@ type KeyState[TReference object.BasicReference, TMetadata model_core.ReferenceMe
 	// before any code that reads it can obtain the KeyState.
 	keyMessageFetcher messageFetcher[TReference, TMetadata]
 	isLookup          bool
+	debugKeyTypeURL   string
 
 	// Pointers to siblings in the keyStateList.
 	previousKey *KeyState[TReference, TMetadata]
@@ -1772,17 +1775,14 @@ func (vs *variableDependenciesComputedValueState[TReference, TMetadata]) buildGr
 
 	// DEBUG: Log graphlets that are slow to build, so that keys
 	// causing excessive nesting of dependencies can be identified.
+	// Statistics per key type are logged periodically as well.
 	buildStart := time.Now()
 	nestedCount := 0
 	defer func() {
-		if d := time.Since(buildStart); d > 2*time.Second {
-			keyType := "unknown"
-			if ks.keyMessageFetcher != nil {
-				if key, err := ks.keyMessageFetcher.getAny(ctx, rc); err == nil {
-					keyType = key.Message.TypeUrl
-				}
-			}
-			log.Printf("SLOW GRAPHLET %s key=%s direct=%d nested=%d took=%s", keyType, ks.keyReference.String(), len(vs.directVariableDependencies), nestedCount, d)
+		d := time.Since(buildStart)
+		recordGraphletStats(ks.debugKeyTypeURL, d, nestedCount, len(vs.directVariableDependencies))
+		if d > 2*time.Second {
+			log.Printf("SLOW GRAPHLET %s key=%s direct=%d nested=%d took=%s", ks.debugKeyTypeURL, ks.keyReference.String(), len(vs.directVariableDependencies), nestedCount, d)
 		}
 	}()
 
@@ -2906,3 +2906,59 @@ type (
 	// are used by RecursiveComputer's unit tests.
 	ProtoEvaluationReaderForTesting = model_parser.MessageObjectReader[object.LocalReference, *model_evaluation_pb.Evaluation]
 )
+
+// DEBUG: Statistics on the construction of graphlets, per key type.
+type graphletTypeStats struct {
+	count       int
+	duration    time.Duration
+	nested      int
+	maxNested   int
+	direct      int
+	maxDuration time.Duration
+}
+
+var (
+	graphletStatsLock    sync.Mutex
+	graphletStats        = map[string]*graphletTypeStats{}
+	graphletStatsChanged bool
+	graphletStatsOnce    sync.Once
+)
+
+func recordGraphletStats(keyTypeURL string, d time.Duration, nested, direct int) {
+	graphletStatsOnce.Do(func() {
+		go func() {
+			for range time.Tick(30 * time.Second) {
+				graphletStatsLock.Lock()
+				if graphletStatsChanged {
+					graphletStatsChanged = false
+					types := make([]string, 0, len(graphletStats))
+					for t := range graphletStats {
+						types = append(types, t)
+					}
+					sort.Slice(types, func(i, j int) bool {
+						return graphletStats[types[i]].duration > graphletStats[types[j]].duration
+					})
+					for _, t := range types {
+						st := graphletStats[t]
+						log.Printf("GRAPHLET STATS %s count=%d total=%s max=%s nested_total=%d nested_max=%d direct_total=%d", t, st.count, st.duration, st.maxDuration, st.nested, st.maxNested, st.direct)
+					}
+				}
+				graphletStatsLock.Unlock()
+			}
+		}()
+	})
+	graphletStatsLock.Lock()
+	st, ok := graphletStats[keyTypeURL]
+	if !ok {
+		st = &graphletTypeStats{}
+		graphletStats[keyTypeURL] = st
+	}
+	st.count++
+	st.duration += d
+	st.maxDuration = max(st.maxDuration, d)
+	st.nested += nested
+	st.maxNested = max(st.maxNested, nested)
+	st.direct += direct
+	graphletStatsChanged = true
+	graphletStatsLock.Unlock()
+}
