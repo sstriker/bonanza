@@ -198,7 +198,15 @@ func (c *baseComputer[TReference, TMetadata]) ComputeRepoPlatformHostPathValue(c
 		return PatchedRepoPlatformHostPathValue[TMetadata]{}, fmt.Errorf("failed to look up captured path in output root: %w", err)
 	}
 	if !capturedNode.IsSet() {
-		return PatchedRepoPlatformHostPathValue[TMetadata]{}, errors.New("action did not capture host path")
+		// The action produced no output, meaning the path does
+		// not exist on the host file system (e.g. it is the
+		// target of a dangling symlink, such as
+		// lib/libatk-wrapper.so in Debian's OpenJDK packages
+		// when libatk-wrapper-java-jni is not installed). Report
+		// its absence by leaving the captured_path oneof unset,
+		// so that callers can distinguish it from a captured
+		// file or directory.
+		return model_core.NewSimplePatchedMessage[TMetadata](&model_analysis_pb.RepoPlatformHostPath_Value{}), nil
 	}
 	if capturedNode.Message.GetDirectory() != nil {
 		// The captured path is a directory. Check whether it
@@ -280,11 +288,7 @@ func (c *baseComputer[TReference, TMetadata]) ComputeRepoPlatformHostPathValue(c
 		), nil
 	}
 
-	// The action produced no output, meaning the path does not exist
-	// on the host file system. Report its absence by leaving the
-	// captured_path oneof unset, so that callers can distinguish it
-	// from a captured file or directory.
-	return model_core.NewSimplePatchedMessage[TMetadata](&model_analysis_pb.RepoPlatformHostPath_Value{}), nil
+	return PatchedRepoPlatformHostPathValue[TMetadata]{}, errors.New("captured host path is neither a file nor a directory")
 }
 
 type changeTrackingDirectoryNormalizingPathResolver[TReference object.BasicReference, TMetadata model_core.ReferenceMetadata] struct {
