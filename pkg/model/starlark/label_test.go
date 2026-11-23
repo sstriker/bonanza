@@ -41,3 +41,30 @@ test()
 	)
 	require.NoError(t, err)
 }
+
+func TestLabelAttributes(t *testing.T) {
+	_, err := execBzlFile(
+		newTestThread(t),
+		util.Must(label.NewCanonicalLabel("@@main+//:test.bzl")),
+		`
+def check(got, want):
+    if got != want:
+        fail("got %r, want %r" % (got, want))
+
+def test():
+    check(l.name, "bar")
+    check(l.package, "foo")
+    check(l.repo_name, "rules+")
+    check(l.workspace_name, "rules+")
+    check(l.workspace_root, "external/rules+")
+    check(str(l.same_package_label("baz")), "@@rules+//foo:baz")
+    check(dir(l), ["name", "package", "relative", "repo_name", "same_package_label", "workspace_name", "workspace_root"])
+
+test()
+`,
+		map[string]eval.Value{
+			"l": model_starlark.NewLabel[object.LocalReference, model_core.CreatedObjectTree](util.Must(label.NewResolvedLabel("@@rules+//foo:bar"))),
+		},
+	)
+	require.NoError(t, err)
+}
