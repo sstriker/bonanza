@@ -183,6 +183,7 @@ go_test(
         "configured_rule_target_internal_test.go",
         "configured_rule_usage_internal_test.go",
         "configured_target_test.go",
+        "exec_transition_internal_test.go",
         "file_root_test.go",
         "generating_rule_aspects_test.go",
         "http_archive_contents_test.go",

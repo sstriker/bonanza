@@ -1181,7 +1181,7 @@ bool_flag(
 
 bool_flag(
     name = "incompatible_exclude_starlark_flags_from_exec_config",
-    build_setting_default = True,
+    build_setting_default = False,
     visibility = ["//visibility:public"],
 )
 

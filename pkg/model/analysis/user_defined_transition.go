@@ -232,6 +232,7 @@ func (c *baseComputer[TReference, TMetadata]) applyTransition(
 	analysisEncoders *AnalysisEncoders[TReference],
 	configurationReference model_core.Message[*model_core_pb.DecodableReference, TReference],
 	buildSettingValuesToApply []buildSettingValueToApply[TReference],
+	keepExistingOverride func(label string) bool,
 	valueEncodingOptions *model_starlark.ValueEncodingOptions[TReference, TMetadata],
 ) (model_core.PatchedMessage[*model_core_pb.DecodableReference, TMetadata], error) {
 	analysisReaders := &analysisEncoders.Readers
@@ -295,8 +296,13 @@ func (c *baseComputer[TReference, TMetadata]) applyTransition(
 			cmp = strings.Compare(level.Leaf.Label, buildSettingValuesToApply[0].label)
 		}
 		if cmp < 0 {
-			// Preserve existing build setting.
-			treeBuilder.PushChild(model_core.Patch(e, existingOverride))
+			// Preserve existing build setting, unless the
+			// caller wants it to be reset to its default value.
+			if keepExistingOverride == nil || keepExistingOverride(existingOverride.Message.GetLeaf().GetLabel()) {
+				if err := treeBuilder.PushChild(model_core.Patch(e, existingOverride)); err != nil {
+					return model_core.PatchedMessage[*model_core_pb.DecodableReference, TMetadata]{}, err
+				}
+			}
 		} else {
 			// Either replace or remove an existing build
 			// setting override, or inject a new one.
@@ -744,6 +750,7 @@ func (c *baseComputer[TReference, TMetadata]) performAndApplyUserDefinedTransiti
 			analysisEncoders,
 			configurationReference,
 			buildSettingValuesToApply,
+			/* keepExistingOverride = */ nil,
 			valueEncodingOptionsFactory.newValueEncodingOptions(ctx, nil),
 		)
 		if err != nil {
