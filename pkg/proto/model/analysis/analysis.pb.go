@@ -7321,10 +7321,11 @@ func (x *TargetOutputDefinition_Symlink) GetIsExecutable() bool {
 }
 
 type TargetOutputDefinition_Compose struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Segments      *starlark.File         `protobuf:"bytes,1,opt,name=segments,proto3" json:"segments,omitempty"`
-	Sources       []*starlark.File       `protobuf:"bytes,2,rep,name=sources,proto3" json:"sources,omitempty"`
-	IsExecutable  bool                   `protobuf:"varint,3,opt,name=is_executable,json=isExecutable,proto3" json:"is_executable,omitempty"`
+	state         protoimpl.MessageState   `protogen:"open.v1"`
+	Segments      *starlark.File           `protobuf:"bytes,1,opt,name=segments,proto3" json:"segments,omitempty"`
+	UniqueSources []*starlark.List_Element `protobuf:"bytes,2,rep,name=unique_sources,json=uniqueSources,proto3" json:"unique_sources,omitempty"`
+	IsExecutable  bool                     `protobuf:"varint,3,opt,name=is_executable,json=isExecutable,proto3" json:"is_executable,omitempty"`
+	SourceIndices []uint32                 `protobuf:"varint,4,rep,packed,name=source_indices,json=sourceIndices,proto3" json:"source_indices,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -7366,9 +7367,9 @@ func (x *TargetOutputDefinition_Compose) GetSegments() *starlark.File {
 	return nil
 }
 
-func (x *TargetOutputDefinition_Compose) GetSources() []*starlark.File {
+func (x *TargetOutputDefinition_Compose) GetUniqueSources() []*starlark.List_Element {
 	if x != nil {
-		return x.Sources
+		return x.UniqueSources
 	}
 	return nil
 }
@@ -7378,6 +7379,13 @@ func (x *TargetOutputDefinition_Compose) GetIsExecutable() bool {
 		return x.IsExecutable
 	}
 	return false
+}
+
+func (x *TargetOutputDefinition_Compose) GetSourceIndices() []uint32 {
+	if x != nil {
+		return x.SourceIndices
+	}
+	return nil
 }
 
 type TargetOutputDefinition_Write struct {
@@ -17227,7 +17235,7 @@ const file_bonanza_build_pkg_proto_model_analysis_analysis_proto_rawDesc = "" +
 	"\x13output_path_pattern\x18\x05 \x01(\v2\".bonanza.model.command.PathPatternR\x11outputPathPattern\x12b\n" +
 	"\x18initial_output_directory\x18\x06 \x03(\v2(.bonanza.model.filesystem.DirectoryEntryR\x16initialOutputDirectory\x12H\n" +
 	"\x03env\x18\a \x03(\v26.bonanza.model.command.EnvironmentVariableList.ElementR\x03env\x121\n" +
-	"\x15use_default_shell_env\x18\b \x01(\bR\x12useDefaultShellEnv\"\xa5\n" +
+	"\x15use_default_shell_env\x18\b \x01(\bR\x12useDefaultShellEnv\"\xe1\n" +
 	"\n" +
 	"\x16TargetOutputDefinition\x12\x1d\n" +
 	"\taction_id\x18\x02 \x01(\fH\x00R\bactionId\x12h\n" +
@@ -17247,11 +17255,12 @@ const file_bonanza_build_pkg_proto_model_analysis_analysis_proto_rawDesc = "" +
 	"\vreplacement\x18\x02 \x01(\fR\vreplacement\x1ad\n" +
 	"\aSymlink\x124\n" +
 	"\x06target\x18\x01 \x01(\v2\x1c.bonanza.model.starlark.FileR\x06target\x12#\n" +
-	"\ris_executable\x18\x02 \x01(\bR\fisExecutable\x1a\xa0\x01\n" +
+	"\ris_executable\x18\x02 \x01(\bR\fisExecutable\x1a\xdc\x01\n" +
 	"\aCompose\x128\n" +
-	"\bsegments\x18\x01 \x01(\v2\x1c.bonanza.model.starlark.FileR\bsegments\x126\n" +
-	"\asources\x18\x02 \x03(\v2\x1c.bonanza.model.starlark.FileR\asources\x12#\n" +
-	"\ris_executable\x18\x03 \x01(\bR\fisExecutable\x1ai\n" +
+	"\bsegments\x18\x01 \x01(\v2\x1c.bonanza.model.starlark.FileR\bsegments\x12K\n" +
+	"\x0eunique_sources\x18\x02 \x03(\v2$.bonanza.model.starlark.List.ElementR\runiqueSources\x12#\n" +
+	"\ris_executable\x18\x03 \x01(\bR\fisExecutable\x12%\n" +
+	"\x0esource_indices\x18\x04 \x03(\rR\rsourceIndices\x1ai\n" +
 	"\x05Write\x12;\n" +
 	"\acontent\x18\x01 \x01(\v2!.bonanza.model.analysis.Args.LeafR\acontent\x12#\n" +
 	"\ris_executable\x18\x02 \x01(\bR\fisExecutableB\b\n" +
@@ -18542,7 +18551,7 @@ var file_bonanza_build_pkg_proto_model_analysis_analysis_proto_depIdxs = []int32
 	162, // 78: bonanza.model.analysis.TargetOutputDefinition.ExpandTemplate.substitutions:type_name -> bonanza.model.analysis.TargetOutputDefinition.ExpandTemplate.Substitution
 	374, // 79: bonanza.model.analysis.TargetOutputDefinition.Symlink.target:type_name -> bonanza.model.starlark.File
 	374, // 80: bonanza.model.analysis.TargetOutputDefinition.Compose.segments:type_name -> bonanza.model.starlark.File
-	374, // 81: bonanza.model.analysis.TargetOutputDefinition.Compose.sources:type_name -> bonanza.model.starlark.File
+	360, // 81: bonanza.model.analysis.TargetOutputDefinition.Compose.unique_sources:type_name -> bonanza.model.starlark.List.Element
 	148, // 82: bonanza.model.analysis.TargetOutputDefinition.Write.content:type_name -> bonanza.model.analysis.Args.Leaf
 	165, // 83: bonanza.model.analysis.LabelAttrAspects.Value.aspects:type_name -> bonanza.model.analysis.LabelAttrAspects.Value.Aspect
 	375, // 84: bonanza.model.analysis.LabelAttrAspects.Value.Aspect.public_attrs:type_name -> bonanza.model.starlark.NamedAttr

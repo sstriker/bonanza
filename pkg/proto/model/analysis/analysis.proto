@@ -734,12 +734,18 @@ message TargetOutputDefinition {
     // bonanza.build/pkg/model/filesystem.SegmentListReader.
     bonanza.model.starlark.File segments = 1;
 
-    // Files that slices in the segment list refer to, by index. The
-    // same file may be provided multiple times.
-    repeated bonanza.model.starlark.File sources = 2;
+    // List of File objects of the files that slices in the segment
+    // list refer to. Each file is listed once. The list is stored in
+    // the same way as the inputs of actions, so that the root
+    // directories of the files can be obtained using FilesRoot.
+    repeated bonanza.model.starlark.List.Element unique_sources = 2;
 
     // Whether the output file is executable.
     bool is_executable = 3;
+
+    // For each input of the segment list, the index of the file in
+    // unique_sources. The same file may be referred to multiple times.
+    repeated uint32 source_indices = 4;
   }
 
   message Write {

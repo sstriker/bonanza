@@ -2114,23 +2114,61 @@ func (rca *targetContextActions[TReference, TMetadata]) doCompose(thread *eval.T
 	if output.fileType != model_starlark_pb.File_Owner_FILE {
 		return nil, errors.New("output was not declared as a regular file")
 	}
+
+	// Store each of the source files only once, in the form of a
+	// list of File objects. This permits obtaining their root
+	// directories through FilesRoot, just like for the inputs of
+	// actions. This prevents the output file from depending on
+	// thousands of FileRoot values directly.
+	valueEncodingOptions := rc.valueEncodingOptionsFactory.newValueEncodingOptions(rc.context, nil)
+	uniqueSourcesBuilder := model_starlark.NewListBuilder(valueEncodingOptions)
+	defer uniqueSourcesBuilder.Discard()
+	uniqueSourceIndices := map[string]uint32{}
+	sourceIndices := make([]uint32, 0, len(sources))
+	for i, source := range sources {
+		key, err := proto.MarshalOptions{Deterministic: true}.Marshal(source.GetDefinition().Message)
+		if err != nil {
+			return nil, fmt.Errorf("source %d: %w", i, err)
+		}
+		index, ok := uniqueSourceIndices[string(key)]
+		if !ok {
+			index = uint32(len(uniqueSourceIndices))
+			uniqueSourceIndices[string(key)] = index
+			encodedSource, err := source.EncodeValue(thread, nil, nil, valueEncodingOptions)
+			if err != nil {
+				return nil, fmt.Errorf("source %d: %w", i, err)
+			}
+			if err := uniqueSourcesBuilder.PushChild(model_core.NewPatchedMessage(
+				&model_starlark_pb.List_Element{
+					Level: &model_starlark_pb.List_Element_Leaf{
+						Leaf: encodedSource.Message,
+					},
+				},
+				encodedSource.Patcher,
+			)); err != nil {
+				return nil, err
+			}
+		}
+		sourceIndices = append(sourceIndices, index)
+	}
+	uniqueSources, err := uniqueSourcesBuilder.FinalizeList()
+	if err != nil {
+		return nil, err
+	}
+
 	patcher := model_core.NewReferenceMessagePatcher[TMetadata]()
+	patcher.Merge(uniqueSources.Patcher)
 	patchedSegments := model_core.Patch(rc.environment, segments.GetDefinition())
 	patcher.Merge(patchedSegments.Patcher)
-	sourcesList := make([]*model_starlark_pb.File, 0, len(sources))
-	for _, source := range sources {
-		patchedSource := model_core.Patch(rc.environment, source.GetDefinition())
-		sourcesList = append(sourcesList, patchedSource.Message)
-		patcher.Merge(patchedSource.Patcher)
-	}
 	return eval.None, output.setDefinition(
 		model_core.NewPatchedMessage(
 			&model_analysis_pb.TargetOutputDefinition{
 				Source: &model_analysis_pb.TargetOutputDefinition_Compose_{
 					Compose: &model_analysis_pb.TargetOutputDefinition_Compose{
-						Segments:     patchedSegments.Message,
-						Sources:      sourcesList,
-						IsExecutable: isExecutable,
+						Segments:      patchedSegments.Message,
+						UniqueSources: uniqueSources.Message,
+						SourceIndices: sourceIndices,
+						IsExecutable:  isExecutable,
 					},
 				},
 			},

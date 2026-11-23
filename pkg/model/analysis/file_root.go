@@ -10,6 +10,7 @@ import (
 
 	"bonanza.build/pkg/label"
 	model_core "bonanza.build/pkg/model/core"
+	"bonanza.build/pkg/model/core/btree"
 	"bonanza.build/pkg/model/evaluation"
 	model_filesystem "bonanza.build/pkg/model/filesystem"
 	model_parser "bonanza.build/pkg/model/parser"
@@ -57,6 +58,13 @@ func getStarlarkFileProperties[TReference object.BasicReference, TMetadata model
 		return model_core.Message[*model_filesystem_pb.FileProperties, TReference]{}, evaluation.ErrMissingDependency
 	}
 
+	return lookUpStarlarkFileInRootDirectory(ctx, directoryReaders, model_core.Nested(targetOutput, targetOutput.Message.RootDirectory), f)
+}
+
+// lookUpStarlarkFileInRootDirectory returns the properties of a file
+// contained in a root directory, such as the root directory of a
+// FileRoot or FilesRoot value.
+func lookUpStarlarkFileInRootDirectory[TReference object.BasicReference](ctx context.Context, directoryReaders *DirectoryReaders[TReference], rootDirectory model_core.Message[[]*model_filesystem_pb.DirectoryEntry, TReference], f model_core.Message[*model_starlark_pb.File, TReference]) (model_core.Message[*model_filesystem_pb.FileProperties, TReference], error) {
 	filePath, err := model_starlark.FileGetInputRootPath(f, nil)
 	if err != nil {
 		return model_core.Message[*model_filesystem_pb.FileProperties, TReference]{}, err
@@ -68,9 +76,7 @@ func getStarlarkFileProperties[TReference object.BasicReference, TMetadata model
 			return nil, errors.New("path resolution escapes input root")
 		},
 		model_core.Message[*model_filesystem_pb.DirectoryReference, TReference]{},
-		[]model_core.Message[[]*model_filesystem_pb.DirectoryEntry, TReference]{
-			model_core.Nested(targetOutput, targetOutput.Message.RootDirectory),
-		},
+		[]model_core.Message[[]*model_filesystem_pb.DirectoryEntry, TReference]{rootDirectory},
 	)
 	if err := path.Resolve(
 		path.UNIXFormat.NewParser(filePath),
@@ -781,20 +787,22 @@ func (baseComputer[TReference, TMetadata]) ComputeFileRootValue(ctx context.Cont
 				}
 				missingDependencies = true
 			}
-			sources := make([]model_core.Message[*model_filesystem_pb.FileContents, TReference], 0, len(source.Compose.Sources))
-			for i, sourceFile := range source.Compose.Sources {
-				sourceFileProperties, err := getStarlarkFileProperties(ctx, e, model_core.Nested(output, sourceFile))
-				if err != nil {
-					if !errors.Is(err, evaluation.ErrMissingDependency) {
-						return PatchedFileRootValue[TMetadata]{}, fmt.Errorf("failed to obtain file properties of source %d: %w", i, err)
-					}
-					missingDependencies = true
-					continue
+			uniqueSources, err := getComposedFileSources(ctx, e, model_core.Nested(output, source.Compose.UniqueSources))
+			if err != nil {
+				if !errors.Is(err, evaluation.ErrMissingDependency) {
+					return PatchedFileRootValue[TMetadata]{}, fmt.Errorf("failed to obtain file properties of sources: %w", err)
 				}
-				sources = append(sources, model_core.Nested(sourceFileProperties, sourceFileProperties.Message.Contents))
+				missingDependencies = true
 			}
 			if missingDependencies {
 				return PatchedFileRootValue[TMetadata]{}, evaluation.ErrMissingDependency
+			}
+			sources := make([]model_core.Message[*model_filesystem_pb.FileContents, TReference], 0, len(source.Compose.SourceIndices))
+			for i, index := range source.Compose.SourceIndices {
+				if int(index) >= len(uniqueSources) {
+					return PatchedFileRootValue[TMetadata]{}, fmt.Errorf("index of source %d is out of range", i)
+				}
+				sources = append(sources, uniqueSources[index])
 			}
 
 			segmentsContentsEntry, err := model_filesystem.NewFileContentsEntryFromProto(model_core.Nested(segmentsFileProperties, segmentsFileProperties.Message.Contents))
@@ -1241,4 +1249,101 @@ type FileRootEnvironmentForTesting FileRootEnvironment[model_core.CreatedObjectT
 type composedFileMerkleTreeCapturer[TReference any, TMetadata model_core.ReferenceMetadata] struct {
 	model_filesystem.FileMerkleTreeCapturer[TMetadata]
 	model_core.ExistingObjectCapturer[TReference, TMetadata]
+}
+
+type getComposedFileSourcesEnvironment[TReference object.BasicReference, TMetadata model_core.ReferenceMetadata] interface {
+	getStarlarkFilePropertiesEnvironment[TReference, TMetadata]
+	FilesRootValueGetter[TReference, TMetadata]
+	StarlarkValueEncodersObjectGetter[TReference]
+}
+
+// getComposedFileSources returns the contents of the source files of a
+// file created using ctx.actions.compose(). The root directories of the
+// files are obtained by requesting FilesRoot for each of the parent
+// nodes in the list, so that the output file does not depend on the
+// FileRoot of each source file directly. Composed files may have
+// thousands of source files, and having that many direct dependencies
+// makes it expensive to store the evaluation of the output file.
+func getComposedFileSources[TReference object.BasicReference, TMetadata model_core.ReferenceMetadata](ctx context.Context, e getComposedFileSourcesEnvironment[TReference, TMetadata], uniqueSources model_core.Message[[]*model_starlark_pb.List_Element, TReference]) ([]model_core.Message[*model_filesystem_pb.FileContents, TReference], error) {
+	valueReaders, gotValueReaders := getStarlarkValueReaders(e)
+	directoryReaders, gotDirectoryReaders := e.GetDirectoryAccessParametersObject(&model_analysis_pb.DirectoryAccessParameters_Key{})
+	if !gotValueReaders || !gotDirectoryReaders {
+		return nil, evaluation.ErrMissingDependency
+	}
+
+	var sources []model_core.Message[*model_filesystem_pb.FileContents, TReference]
+	addSource := func(rootDirectory model_core.Message[[]*model_filesystem_pb.DirectoryEntry, TReference], element model_core.Message[*model_starlark_pb.List_Element, TReference]) error {
+		file, ok := element.Message.GetLeaf().GetKind().(*model_starlark_pb.Value_File)
+		if !ok {
+			return fmt.Errorf("element at index %d is not a file", len(sources))
+		}
+		fileProperties, err := lookUpStarlarkFileInRootDirectory(ctx, directoryReaders, rootDirectory, model_core.Nested(element, file.File))
+		if err != nil {
+			return fmt.Errorf("file at index %d: %w", len(sources), err)
+		}
+		sources = append(sources, model_core.Nested(fileProperties, fileProperties.Message.Contents))
+		return nil
+	}
+
+	missingDependencies := false
+	for _, element := range uniqueSources.Message {
+		switch level := element.Level.(type) {
+		case *model_starlark_pb.List_Element_Parent_:
+			patchedReference := model_core.Patch(e, model_core.Nested(uniqueSources, level.Parent.Reference))
+			filesRoot := e.GetFilesRootValue(
+				model_core.NewPatchedMessage(
+					&model_analysis_pb.FilesRoot_Key{
+						ListReference:   patchedReference.Message,
+						DirectoryLayout: model_analysis_pb.DirectoryLayout_INPUT_ROOT,
+					},
+					patchedReference.Patcher,
+				),
+			)
+			if !filesRoot.IsSet() {
+				missingDependencies = true
+				continue
+			}
+			if missingDependencies {
+				continue
+			}
+			rootDirectory := model_core.Nested(filesRoot, filesRoot.Message.RootDirectory)
+			var errIter error
+			for leaf := range btree.AllLeaves(
+				ctx,
+				valueReaders.List,
+				model_core.Nested(uniqueSources, []*model_starlark_pb.List_Element{element}),
+				func(element model_core.Message[*model_starlark_pb.List_Element, TReference]) (*model_core_pb.DecodableReference, error) {
+					return element.Message.GetParent().GetReference(), nil
+				},
+				&errIter,
+			) {
+				if err := addSource(rootDirectory, leaf); err != nil {
+					return nil, err
+				}
+			}
+			if errIter != nil {
+				return nil, errIter
+			}
+		case *model_starlark_pb.List_Element_Leaf:
+			file, ok := level.Leaf.Kind.(*model_starlark_pb.Value_File)
+			if !ok {
+				return nil, fmt.Errorf("element at index %d is not a file", len(sources))
+			}
+			fileProperties, err := getStarlarkFileProperties(ctx, e, model_core.Nested(uniqueSources, file.File))
+			if err != nil {
+				if errors.Is(err, evaluation.ErrMissingDependency) {
+					missingDependencies = true
+					continue
+				}
+				return nil, fmt.Errorf("file at index %d: %w", len(sources), err)
+			}
+			sources = append(sources, model_core.Nested(fileProperties, fileProperties.Message.Contents))
+		default:
+			return nil, errors.New("invalid list level type")
+		}
+	}
+	if missingDependencies {
+		return nil, evaluation.ErrMissingDependency
+	}
+	return sources, nil
 }
