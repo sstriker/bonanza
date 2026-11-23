@@ -331,6 +331,8 @@ type FileContents struct {
 	//	*FileContents_List_
 	//	*FileContents_ChunkReference
 	//	*FileContents_Hole
+	//	*FileContents_Slice_
+	//	*FileContents_Inline
 	Level          isFileContents_Level `protobuf_oneof:"level"`
 	TotalSizeBytes uint64               `protobuf:"varint,4,opt,name=total_size_bytes,json=totalSizeBytes,proto3" json:"total_size_bytes,omitempty"`
 	Utf8Stat       uint64               `protobuf:"varint,5,opt,name=utf8_stat,json=utf8Stat,proto3" json:"utf8_stat,omitempty"`
@@ -402,6 +404,24 @@ func (x *FileContents) GetHole() *emptypb.Empty {
 	return nil
 }
 
+func (x *FileContents) GetSlice() *FileContents_Slice {
+	if x != nil {
+		if x, ok := x.Level.(*FileContents_Slice_); ok {
+			return x.Slice
+		}
+	}
+	return nil
+}
+
+func (x *FileContents) GetInline() []byte {
+	if x != nil {
+		if x, ok := x.Level.(*FileContents_Inline); ok {
+			return x.Inline
+		}
+	}
+	return nil
+}
+
 func (x *FileContents) GetTotalSizeBytes() uint64 {
 	if x != nil {
 		return x.TotalSizeBytes
@@ -432,11 +452,23 @@ type FileContents_Hole struct {
 	Hole *emptypb.Empty `protobuf:"bytes,3,opt,name=hole,proto3,oneof"`
 }
 
+type FileContents_Slice_ struct {
+	Slice *FileContents_Slice `protobuf:"bytes,6,opt,name=slice,proto3,oneof"`
+}
+
+type FileContents_Inline struct {
+	Inline []byte `protobuf:"bytes,7,opt,name=inline,proto3,oneof"`
+}
+
 func (*FileContents_List_) isFileContents_Level() {}
 
 func (*FileContents_ChunkReference) isFileContents_Level() {}
 
 func (*FileContents_Hole) isFileContents_Level() {}
+
+func (*FileContents_Slice_) isFileContents_Level() {}
+
+func (*FileContents_Inline) isFileContents_Level() {}
 
 type MaybeInlineFileContents struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
@@ -1022,6 +1054,58 @@ func (x *FileContents_List) GetSparse() bool {
 	return false
 }
 
+type FileContents_Slice struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Source        *FileContents          `protobuf:"bytes,1,opt,name=source,proto3" json:"source,omitempty"`
+	OffsetBytes   uint64                 `protobuf:"varint,2,opt,name=offset_bytes,json=offsetBytes,proto3" json:"offset_bytes,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *FileContents_Slice) Reset() {
+	*x = FileContents_Slice{}
+	mi := &file_bonanza_build_pkg_proto_model_filesystem_filesystem_proto_msgTypes[15]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *FileContents_Slice) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*FileContents_Slice) ProtoMessage() {}
+
+func (x *FileContents_Slice) ProtoReflect() protoreflect.Message {
+	mi := &file_bonanza_build_pkg_proto_model_filesystem_filesystem_proto_msgTypes[15]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use FileContents_Slice.ProtoReflect.Descriptor instead.
+func (*FileContents_Slice) Descriptor() ([]byte, []int) {
+	return file_bonanza_build_pkg_proto_model_filesystem_filesystem_proto_rawDescGZIP(), []int{5, 1}
+}
+
+func (x *FileContents_Slice) GetSource() *FileContents {
+	if x != nil {
+		return x.Source
+	}
+	return nil
+}
+
+func (x *FileContents_Slice) GetOffsetBytes() uint64 {
+	if x != nil {
+		return x.OffsetBytes
+	}
+	return 0
+}
+
 var File_bonanza_build_pkg_proto_model_filesystem_filesystem_proto protoreflect.FileDescriptor
 
 const file_bonanza_build_pkg_proto_model_filesystem_filesystem_proto_rawDesc = "" +
@@ -1058,17 +1142,22 @@ const file_bonanza_build_pkg_proto_model_filesystem_filesystem_proto_rawDesc = "
 	"\x12DirectoryReference\x12s\n" +
 	"\treference\x18\x01 \x01(\v2&.bonanza.model.core.DecodableReferenceB-\xea\xd7 )\x1a'bonanza.model.filesystem.DirectoryEntryR\treference\x12+\n" +
 	"\x11directories_count\x18\x02 \x01(\rR\x10directoriesCount\x12g\n" +
-	"!maximum_symlink_escapement_levels\x18\x03 \x01(\v2\x1c.google.protobuf.UInt32ValueR\x1emaximumSymlinkEscapementLevels\"\xbe\x03\n" +
+	"!maximum_symlink_escapement_levels\x18\x03 \x01(\v2\x1c.google.protobuf.UInt32ValueR\x1emaximumSymlinkEscapementLevels\"\x8a\x05\n" +
 	"\fFileContents\x12A\n" +
 	"\x04list\x18\x01 \x01(\v2+.bonanza.model.filesystem.FileContents.ListH\x00R\x04list\x12Y\n" +
 	"\x0fchunk_reference\x18\x02 \x01(\v2&.bonanza.model.core.DecodableReferenceB\x06\xea\xd7 \x02\n" +
 	"\x00H\x00R\x0echunkReference\x12,\n" +
-	"\x04hole\x18\x03 \x01(\v2\x16.google.protobuf.EmptyH\x00R\x04hole\x12(\n" +
+	"\x04hole\x18\x03 \x01(\v2\x16.google.protobuf.EmptyH\x00R\x04hole\x12D\n" +
+	"\x05slice\x18\x06 \x01(\v2,.bonanza.model.filesystem.FileContents.SliceH\x00R\x05slice\x12\x18\n" +
+	"\x06inline\x18\a \x01(\fH\x00R\x06inline\x12(\n" +
 	"\x10total_size_bytes\x18\x04 \x01(\x04R\x0etotalSizeBytes\x12\x1b\n" +
 	"\tutf8_stat\x18\x05 \x01(\x04R\butf8Stat\x1a\x91\x01\n" +
 	"\x04List\x12q\n" +
 	"\treference\x18\x01 \x01(\v2&.bonanza.model.core.DecodableReferenceB+\xea\xd7 '\x1a%bonanza.model.filesystem.FileContentsR\treference\x12\x16\n" +
-	"\x06sparse\x18\x02 \x01(\bR\x06sparseB\a\n" +
+	"\x06sparse\x18\x02 \x01(\bR\x06sparse\x1aj\n" +
+	"\x05Slice\x12>\n" +
+	"\x06source\x18\x01 \x01(\v2&.bonanza.model.filesystem.FileContentsR\x06source\x12!\n" +
+	"\foffset_bytes\x18\x02 \x01(\x04R\voffsetBytesB\a\n" +
 	"\x05level\"\xa4\x01\n" +
 	"\x17MaybeInlineFileContents\x12)\n" +
 	"\x0fcontents_inline\x18\x01 \x01(\fH\x00R\x0econtentsInline\x12U\n" +
@@ -1100,7 +1189,7 @@ func file_bonanza_build_pkg_proto_model_filesystem_filesystem_proto_rawDescGZIP(
 	return file_bonanza_build_pkg_proto_model_filesystem_filesystem_proto_rawDescData
 }
 
-var file_bonanza_build_pkg_proto_model_filesystem_filesystem_proto_msgTypes = make([]protoimpl.MessageInfo, 15)
+var file_bonanza_build_pkg_proto_model_filesystem_filesystem_proto_msgTypes = make([]protoimpl.MessageInfo, 16)
 var file_bonanza_build_pkg_proto_model_filesystem_filesystem_proto_goTypes = []any{
 	(*FileProperties)(nil),                   // 0: bonanza.model.filesystem.FileProperties
 	(*SymlinkProperties)(nil),                // 1: bonanza.model.filesystem.SymlinkProperties
@@ -1117,43 +1206,46 @@ var file_bonanza_build_pkg_proto_model_filesystem_filesystem_proto_goTypes = []a
 	(*DirectoryEntry_Parent)(nil),            // 12: bonanza.model.filesystem.DirectoryEntry.Parent
 	(*DirectoryEntry_Node)(nil),              // 13: bonanza.model.filesystem.DirectoryEntry.Node
 	(*FileContents_List)(nil),                // 14: bonanza.model.filesystem.FileContents.List
-	(*core.DecodableReference)(nil),          // 15: bonanza.model.core.DecodableReference
-	(*wrapperspb.UInt32Value)(nil),           // 16: google.protobuf.UInt32Value
-	(*emptypb.Empty)(nil),                    // 17: google.protobuf.Empty
-	(*encoding.BinaryEncoder)(nil),           // 18: bonanza.model.encoding.BinaryEncoder
-	(*chunking.Parameters)(nil),              // 19: bonanza.model.chunking.Parameters
+	(*FileContents_Slice)(nil),               // 15: bonanza.model.filesystem.FileContents.Slice
+	(*core.DecodableReference)(nil),          // 16: bonanza.model.core.DecodableReference
+	(*wrapperspb.UInt32Value)(nil),           // 17: google.protobuf.UInt32Value
+	(*emptypb.Empty)(nil),                    // 18: google.protobuf.Empty
+	(*encoding.BinaryEncoder)(nil),           // 19: bonanza.model.encoding.BinaryEncoder
+	(*chunking.Parameters)(nil),              // 20: bonanza.model.chunking.Parameters
 }
 var file_bonanza_build_pkg_proto_model_filesystem_filesystem_proto_depIdxs = []int32{
 	5,  // 0: bonanza.model.filesystem.FileProperties.contents:type_name -> bonanza.model.filesystem.FileContents
 	12, // 1: bonanza.model.filesystem.DirectoryEntry.parent:type_name -> bonanza.model.filesystem.DirectoryEntry.Parent
 	13, // 2: bonanza.model.filesystem.DirectoryEntry.node:type_name -> bonanza.model.filesystem.DirectoryEntry.Node
 	11, // 3: bonanza.model.filesystem.DirectoryEntry.directory_contents:type_name -> bonanza.model.filesystem.DirectoryEntry.DirectoryContents
-	15, // 4: bonanza.model.filesystem.DirectoryReference.reference:type_name -> bonanza.model.core.DecodableReference
-	16, // 5: bonanza.model.filesystem.DirectoryReference.maximum_symlink_escapement_levels:type_name -> google.protobuf.UInt32Value
+	16, // 4: bonanza.model.filesystem.DirectoryReference.reference:type_name -> bonanza.model.core.DecodableReference
+	17, // 5: bonanza.model.filesystem.DirectoryReference.maximum_symlink_escapement_levels:type_name -> google.protobuf.UInt32Value
 	14, // 6: bonanza.model.filesystem.FileContents.list:type_name -> bonanza.model.filesystem.FileContents.List
-	15, // 7: bonanza.model.filesystem.FileContents.chunk_reference:type_name -> bonanza.model.core.DecodableReference
-	17, // 8: bonanza.model.filesystem.FileContents.hole:type_name -> google.protobuf.Empty
-	5,  // 9: bonanza.model.filesystem.MaybeInlineFileContents.contents_external:type_name -> bonanza.model.filesystem.FileContents
-	18, // 10: bonanza.model.filesystem.DirectoryAccessParameters.encoders:type_name -> bonanza.model.encoding.BinaryEncoder
-	7,  // 11: bonanza.model.filesystem.DirectoryCreationParameters.access:type_name -> bonanza.model.filesystem.DirectoryAccessParameters
-	19, // 12: bonanza.model.filesystem.DirectoryCreationParameters.directories_parameters:type_name -> bonanza.model.chunking.Parameters
-	18, // 13: bonanza.model.filesystem.FileAccessParameters.chunk_encoders:type_name -> bonanza.model.encoding.BinaryEncoder
-	18, // 14: bonanza.model.filesystem.FileAccessParameters.file_contents_list_encoders:type_name -> bonanza.model.encoding.BinaryEncoder
-	9,  // 15: bonanza.model.filesystem.FileCreationParameters.access:type_name -> bonanza.model.filesystem.FileAccessParameters
-	19, // 16: bonanza.model.filesystem.FileCreationParameters.chunk_parameters:type_name -> bonanza.model.chunking.Parameters
-	19, // 17: bonanza.model.filesystem.FileCreationParameters.file_contents_list_parameters:type_name -> bonanza.model.chunking.Parameters
-	3,  // 18: bonanza.model.filesystem.DirectoryEntry.DirectoryContents.entries:type_name -> bonanza.model.filesystem.DirectoryEntry
-	15, // 19: bonanza.model.filesystem.DirectoryEntry.Parent.reference:type_name -> bonanza.model.core.DecodableReference
-	16, // 20: bonanza.model.filesystem.DirectoryEntry.Parent.maximum_symlink_escapement_levels:type_name -> google.protobuf.UInt32Value
-	0,  // 21: bonanza.model.filesystem.DirectoryEntry.Node.file:type_name -> bonanza.model.filesystem.FileProperties
-	1,  // 22: bonanza.model.filesystem.DirectoryEntry.Node.symlink:type_name -> bonanza.model.filesystem.SymlinkProperties
-	2,  // 23: bonanza.model.filesystem.DirectoryEntry.Node.directory:type_name -> bonanza.model.filesystem.DirectoryProperties
-	15, // 24: bonanza.model.filesystem.FileContents.List.reference:type_name -> bonanza.model.core.DecodableReference
-	25, // [25:25] is the sub-list for method output_type
-	25, // [25:25] is the sub-list for method input_type
-	25, // [25:25] is the sub-list for extension type_name
-	25, // [25:25] is the sub-list for extension extendee
-	0,  // [0:25] is the sub-list for field type_name
+	16, // 7: bonanza.model.filesystem.FileContents.chunk_reference:type_name -> bonanza.model.core.DecodableReference
+	18, // 8: bonanza.model.filesystem.FileContents.hole:type_name -> google.protobuf.Empty
+	15, // 9: bonanza.model.filesystem.FileContents.slice:type_name -> bonanza.model.filesystem.FileContents.Slice
+	5,  // 10: bonanza.model.filesystem.MaybeInlineFileContents.contents_external:type_name -> bonanza.model.filesystem.FileContents
+	19, // 11: bonanza.model.filesystem.DirectoryAccessParameters.encoders:type_name -> bonanza.model.encoding.BinaryEncoder
+	7,  // 12: bonanza.model.filesystem.DirectoryCreationParameters.access:type_name -> bonanza.model.filesystem.DirectoryAccessParameters
+	20, // 13: bonanza.model.filesystem.DirectoryCreationParameters.directories_parameters:type_name -> bonanza.model.chunking.Parameters
+	19, // 14: bonanza.model.filesystem.FileAccessParameters.chunk_encoders:type_name -> bonanza.model.encoding.BinaryEncoder
+	19, // 15: bonanza.model.filesystem.FileAccessParameters.file_contents_list_encoders:type_name -> bonanza.model.encoding.BinaryEncoder
+	9,  // 16: bonanza.model.filesystem.FileCreationParameters.access:type_name -> bonanza.model.filesystem.FileAccessParameters
+	20, // 17: bonanza.model.filesystem.FileCreationParameters.chunk_parameters:type_name -> bonanza.model.chunking.Parameters
+	20, // 18: bonanza.model.filesystem.FileCreationParameters.file_contents_list_parameters:type_name -> bonanza.model.chunking.Parameters
+	3,  // 19: bonanza.model.filesystem.DirectoryEntry.DirectoryContents.entries:type_name -> bonanza.model.filesystem.DirectoryEntry
+	16, // 20: bonanza.model.filesystem.DirectoryEntry.Parent.reference:type_name -> bonanza.model.core.DecodableReference
+	17, // 21: bonanza.model.filesystem.DirectoryEntry.Parent.maximum_symlink_escapement_levels:type_name -> google.protobuf.UInt32Value
+	0,  // 22: bonanza.model.filesystem.DirectoryEntry.Node.file:type_name -> bonanza.model.filesystem.FileProperties
+	1,  // 23: bonanza.model.filesystem.DirectoryEntry.Node.symlink:type_name -> bonanza.model.filesystem.SymlinkProperties
+	2,  // 24: bonanza.model.filesystem.DirectoryEntry.Node.directory:type_name -> bonanza.model.filesystem.DirectoryProperties
+	16, // 25: bonanza.model.filesystem.FileContents.List.reference:type_name -> bonanza.model.core.DecodableReference
+	5,  // 26: bonanza.model.filesystem.FileContents.Slice.source:type_name -> bonanza.model.filesystem.FileContents
+	27, // [27:27] is the sub-list for method output_type
+	27, // [27:27] is the sub-list for method input_type
+	27, // [27:27] is the sub-list for extension type_name
+	27, // [27:27] is the sub-list for extension extendee
+	0,  // [0:27] is the sub-list for field type_name
 }
 
 func init() { file_bonanza_build_pkg_proto_model_filesystem_filesystem_proto_init() }
@@ -1170,6 +1262,8 @@ func file_bonanza_build_pkg_proto_model_filesystem_filesystem_proto_init() {
 		(*FileContents_List_)(nil),
 		(*FileContents_ChunkReference)(nil),
 		(*FileContents_Hole)(nil),
+		(*FileContents_Slice_)(nil),
+		(*FileContents_Inline)(nil),
 	}
 	file_bonanza_build_pkg_proto_model_filesystem_filesystem_proto_msgTypes[6].OneofWrappers = []any{
 		(*MaybeInlineFileContents_ContentsInline)(nil),
@@ -1186,7 +1280,7 @@ func file_bonanza_build_pkg_proto_model_filesystem_filesystem_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_bonanza_build_pkg_proto_model_filesystem_filesystem_proto_rawDesc), len(file_bonanza_build_pkg_proto_model_filesystem_filesystem_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   15,
+			NumMessages:   16,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

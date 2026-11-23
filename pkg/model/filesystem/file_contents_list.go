@@ -30,7 +30,7 @@ func NewFileContentsListFromProto[TReference object.BasicReference](l model_core
 	var cumulativeEndBytes uint64
 	fileContentsList := make(FileContentsList[TReference], 0, len(l.Message))
 	for i, part := range l.Message {
-		entry, err := NewFileContentsEntryFromProto(model_core.Nested(l, part))
+		entry, err := newFileContentsListEntryFromProto(model_core.Nested(l, part))
 		if err != nil {
 			return nil, util.StatusWrapf(err, "Part at index %d", i)
 		}

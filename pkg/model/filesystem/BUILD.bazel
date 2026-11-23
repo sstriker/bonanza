@@ -5,6 +5,7 @@ go_library(
     name = "filesystem",
     srcs = [
         "captured_directory_walker.go",
+        "create_composed_file_merkle_tree.go",
         "create_directory_merkle_tree.go",
         "create_file_merkle_tree.go",
         "directory.go",
@@ -25,6 +26,7 @@ go_library(
         "maybe_inline_file_contents.go",
         "merged_directory.go",
         "section_writer.go",
+        "segment_list_reader.go",
     ],
     importpath = "bonanza.build/pkg/model/filesystem",
     visibility = ["//visibility:public"],
@@ -58,6 +60,7 @@ go_library(
 go_test(
     name = "filesystem_test",
     srcs = [
+        "create_composed_file_merkle_tree_test.go",
         "create_directory_merkle_tree_btree_test.go",
         "create_directory_merkle_tree_test.go",
         "create_file_merkle_tree_test.go",
@@ -69,6 +72,7 @@ go_test(
         "merged_directory_test.go",
         "mocks_core_test.go",
         "mocks_filesystem_test.go",
+        "segment_list_reader_test.go",
     ],
     embed = [":filesystem"],
     deps = [

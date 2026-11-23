@@ -726,6 +726,22 @@ message TargetOutputDefinition {
     bool is_executable = 2;
   }
 
+  message Compose {
+    // File containing a segment list that describes how the output
+    // file is composed out of ranges of bytes of the source files,
+    // data that is stored inline, and runs of repeated bytes. The
+    // format of the segment list is described in
+    // bonanza.build/pkg/model/filesystem.SegmentListReader.
+    bonanza.model.starlark.File segments = 1;
+
+    // Files that slices in the segment list refer to, by index. The
+    // same file may be provided multiple times.
+    repeated bonanza.model.starlark.File sources = 2;
+
+    // Whether the output file is executable.
+    bool is_executable = 3;
+  }
+
   message Write {
     // The content of the file.
     Args.Leaf content = 1;
@@ -756,6 +772,11 @@ message TargetOutputDefinition {
 
     // Output of ctx.actions.write(content=<Args>).
     Write write = 6;
+
+    // Output of ctx.actions.compose(). The contents of the output
+    // file refer to the contents of the source files, meaning that
+    // the output file is never written out in its entirety.
+    Compose compose = 7;
   }
 }
 

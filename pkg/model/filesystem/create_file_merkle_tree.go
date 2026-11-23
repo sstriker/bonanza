@@ -51,28 +51,10 @@ func maybeWriteHole[T model_core.ReferenceMetadata](treeBuilder btree.Builder[*m
 	return nil
 }
 
-// CreateFileMerkleTree creates a Merkle tree structure that corresponds
-// to the contents of a single file. If a file is small, it stores all
-// of its contents in a single object. If a file is large, it creates a
-// B-tree.
-//
-// Chunking of large files is performed using the MaxCDC algorithm. The
-// resulting B-tree is a Prolly tree. This ensures that minor changes to
-// a file also result in minor changes to the resulting Merkle tree.
-//
-// TODO: Change this function to support more efficient creation of
-// Merkle trees for sparse files.
-func CreateFileMerkleTree[T model_core.ReferenceMetadata](ctx context.Context, parameters *FileCreationParameters, f io.Reader, capturer FileMerkleTreeCapturer[T]) (model_core.PatchedMessage[*model_filesystem_pb.FileContents, T], error) {
-	chunkReader := parameters.contentDefinedChunker.NewChunkReader(
-		bufio.NewReaderSize(
-			f,
-			max(
-				parameters.referenceFormat.GetMaximumObjectSizeBytes(),
-				parameters.contentDefinedChunker.GetMaximumPeekSizeBytes(),
-			),
-		),
-	)
-	treeBuilder := btree.NewHeightAwareBuilder(
+// newFileContentsListBuilder creates a B-tree builder for lists of
+// FileContents messages, as used to store large files.
+func newFileContentsListBuilder[T model_core.ReferenceMetadata](ctx context.Context, parameters *FileCreationParameters, capturer FileMerkleTreeCapturer[T]) btree.Builder[*model_filesystem_pb.FileContents, T] {
+	return btree.NewHeightAwareBuilder(
 		btree.NewProllyChunkerFactory[T](
 			parameters.fileContentsListParameters,
 			/* isParent = */ func(contents *model_filesystem_pb.FileContents) bool {
@@ -120,6 +102,30 @@ func CreateFileMerkleTree[T model_core.ReferenceMetadata](ctx context.Context, p
 			),
 		),
 	)
+}
+
+// CreateFileMerkleTree creates a Merkle tree structure that corresponds
+// to the contents of a single file. If a file is small, it stores all
+// of its contents in a single object. If a file is large, it creates a
+// B-tree.
+//
+// Chunking of large files is performed using the MaxCDC algorithm. The
+// resulting B-tree is a Prolly tree. This ensures that minor changes to
+// a file also result in minor changes to the resulting Merkle tree.
+//
+// TODO: Change this function to support more efficient creation of
+// Merkle trees for sparse files.
+func CreateFileMerkleTree[T model_core.ReferenceMetadata](ctx context.Context, parameters *FileCreationParameters, f io.Reader, capturer FileMerkleTreeCapturer[T]) (model_core.PatchedMessage[*model_filesystem_pb.FileContents, T], error) {
+	chunkReader := parameters.contentDefinedChunker.NewChunkReader(
+		bufio.NewReaderSize(
+			f,
+			max(
+				parameters.referenceFormat.GetMaximumObjectSizeBytes(),
+				parameters.contentDefinedChunker.GetMaximumPeekSizeBytes(),
+			),
+		),
+	)
+	treeBuilder := newFileContentsListBuilder(ctx, parameters, capturer)
 	defer treeBuilder.Discard()
 
 	currentHoleSizeBytes := uint64(0)

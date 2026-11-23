@@ -220,6 +220,31 @@ message FileContents {
     // holes cannot be succeeded/preceded by other holes. In other
     // words, adjoining holes MUST be merged.
     google.protobuf.Empty hole = 3;
+
+    // A range of bytes of another file. This level may only be used
+    // for parts stored in lists, which allows composing files out of
+    // parts of other files without copying their data (e.g., when
+    // linking executables). The source file MUST itself not contain
+    // any slices.
+    Slice slice = 6;
+
+    // Literal data, stored inline. This level may only be used for
+    // parts stored in lists. It is used in combination with slices to
+    // express small amounts of data that are not present in any of the
+    // source files.
+    bytes inline = 7;
+  }
+
+  message Slice {
+    // The contents of the source file. Its level MUST either be list or
+    // chunk_reference.
+    FileContents source = 1;
+
+    // The offset within the source file at which the slice starts. The
+    // size of the slice is provided by total_size_bytes of the
+    // containing FileContents message. The slice MUST lie within the
+    // bounds of the source file.
+    uint64 offset_bytes = 2;
   }
 
   // The total size of all chunks of data and holes in this file. The
@@ -239,6 +264,8 @@ message FileContents {
   //   list, in order.
   // - For hole, it is always zero (i.e., invalid), as holes consist of
   //   NUL bytes.
+  // - For slice and inline, it is zero, meaning that lists containing
+  //   such parts are reported as being invalid UTF-8.
   uint64 utf8_stat = 5;
 }
 

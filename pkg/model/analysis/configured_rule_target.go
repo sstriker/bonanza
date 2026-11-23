@@ -1927,6 +1927,8 @@ func (rca *targetContextActions[TReference, TMetadata]) Attr(thread *eval.Thread
 	switch name {
 	case "args":
 		return eval.NewBuiltin("ctx.actions.args", rca.doArgs), nil
+	case "compose":
+		return eval.NewBuiltin("ctx.actions.compose", rca.doCompose), nil
 	case "declare_directory":
 		return eval.NewBuiltin("ctx.actions.declare_directory", rca.doDeclareDirectory), nil
 	case "declare_file":
@@ -1952,6 +1954,7 @@ func (rca *targetContextActions[TReference, TMetadata]) Attr(thread *eval.Thread
 
 var targetContextActionsAttrNames = []string{
 	"args",
+	"compose",
 	"declare_directory",
 	"declare_file",
 	"declare_symlink",
@@ -2074,6 +2077,64 @@ func (rca *targetContextActions[TReference, TMetadata]) doExpandTemplate(thread 
 				},
 			},
 			patchedTemplate.Patcher,
+		),
+	)
+}
+
+// doCompose implements ctx.actions.compose(), which is specific to
+// Bonanza. It declares that an output file is composed out of ranges
+// of bytes of other files, as described by a segment list. Unlike
+// running an action that writes the output file, this does not require
+// the output file to be written out in its entirety. Its contents are
+// only computed when the output file is read. This is useful for
+// linkers that are capable of describing the layout of an executable
+// in terms of the object files it is linked from.
+func (rca *targetContextActions[TReference, TMetadata]) doCompose(thread *eval.Thread, b *eval.Builtin, args eval.Args) (eval.Value, error) {
+	if len(args.Positional) != 0 {
+		return nil, fmt.Errorf("%s: got %d positional arguments, want 0", b.Name(), len(args.Positional))
+	}
+	var output *targetOutput[TMetadata]
+	var segments *model_starlark.File[TReference, TMetadata]
+	var sources []*model_starlark.File[TReference, TMetadata]
+	isExecutable := false
+	rc := rca.targetContext
+	fileUnpacker := unpack.Type[*model_starlark.File[TReference, TMetadata]]("File")
+	if err := eval.UnpackArgs(
+		thread, b.Name(), args,
+		// Required arguments.
+		"output", unpack.Bind(&output, rc.outputRegistrar),
+		"segments", unpack.Bind(&segments, fileUnpacker),
+		"sources", unpack.Bind(&sources, unpack.List(fileUnpacker)),
+		// Optional arguments.
+		"is_executable?", unpack.Bind(&isExecutable, unpack.Bool),
+	); err != nil {
+		return nil, err
+	}
+
+	if output.fileType != model_starlark_pb.File_Owner_FILE {
+		return nil, errors.New("output was not declared as a regular file")
+	}
+	patcher := model_core.NewReferenceMessagePatcher[TMetadata]()
+	patchedSegments := model_core.Patch(rc.environment, segments.GetDefinition())
+	patcher.Merge(patchedSegments.Patcher)
+	sourcesList := make([]*model_starlark_pb.File, 0, len(sources))
+	for _, source := range sources {
+		patchedSource := model_core.Patch(rc.environment, source.GetDefinition())
+		sourcesList = append(sourcesList, patchedSource.Message)
+		patcher.Merge(patchedSource.Patcher)
+	}
+	return eval.None, output.setDefinition(
+		model_core.NewPatchedMessage(
+			&model_analysis_pb.TargetOutputDefinition{
+				Source: &model_analysis_pb.TargetOutputDefinition_Compose_{
+					Compose: &model_analysis_pb.TargetOutputDefinition_Compose{
+						Segments:     patchedSegments.Message,
+						Sources:      sourcesList,
+						IsExecutable: isExecutable,
+					},
+				},
+			},
+			patcher,
 		),
 	)
 }

@@ -60,6 +60,14 @@ func (i *FileContentsIterator[TReference]) GetCurrentPart() (reference *model_co
 	return lastSpan.list[0].GetReference(), i.initialOffsetBytes, lastSpan.list[0].GetEndBytes() - lastSpan.startBytes
 }
 
+// getCurrentEntry is identical to GetCurrentPart(), except that it
+// returns the entry of the current part, as opposed to its reference.
+// This permits distinguishing slices and inline data from holes.
+func (i *FileContentsIterator[TReference]) getCurrentEntry() (entry *FileContentsEntry[TReference], offsetBytes, sizeBytes uint64) {
+	lastSpan := &i.spans[len(i.spans)-1]
+	return &lastSpan.list[0], i.initialOffsetBytes, lastSpan.list[0].GetEndBytes() - lastSpan.startBytes
+}
+
 // PushFileContentsList can be invoked after GetCurrentPart() to signal
 // that the current part does not refer to a chunk of data, but another
 // FileContentsList. After calling this method, another call to

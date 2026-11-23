@@ -761,6 +761,98 @@ func (baseComputer[TReference, TMetadata]) ComputeFileRootValue(ctx context.Cont
 				},
 				createdDirectory.Message.Patcher,
 			), nil
+		case *model_analysis_pb.TargetOutputDefinition_Compose_:
+			directoryCreationParameters, gotDirectoryCreationParameters := e.GetDirectoryCreationParametersObject(&model_analysis_pb.DirectoryCreationParameters_Key{})
+			fileCreationParameters, gotFileCreationParameters := e.GetFileCreationParametersObject(&model_analysis_pb.FileCreationParameters_Key{})
+			fileReader, gotFileReader := e.GetFileAccessParametersObject(&model_analysis_pb.FileAccessParameters_Key{})
+			if !gotDirectoryCreationParameters || !gotFileCreationParameters || !gotFileReader {
+				return PatchedFileRootValue[TMetadata]{}, evaluation.ErrMissingDependency
+			}
+
+			// Look up the segment list and the source files.
+			// Only the contents of the segment list are read.
+			// The contents of the source files are merely
+			// referenced.
+			missingDependencies := false
+			segmentsFileProperties, err := getStarlarkFileProperties(ctx, e, model_core.Nested(output, source.Compose.Segments))
+			if err != nil {
+				if !errors.Is(err, evaluation.ErrMissingDependency) {
+					return PatchedFileRootValue[TMetadata]{}, fmt.Errorf("failed to obtain file properties of segment list: %w", err)
+				}
+				missingDependencies = true
+			}
+			sources := make([]model_core.Message[*model_filesystem_pb.FileContents, TReference], 0, len(source.Compose.Sources))
+			for i, sourceFile := range source.Compose.Sources {
+				sourceFileProperties, err := getStarlarkFileProperties(ctx, e, model_core.Nested(output, sourceFile))
+				if err != nil {
+					if !errors.Is(err, evaluation.ErrMissingDependency) {
+						return PatchedFileRootValue[TMetadata]{}, fmt.Errorf("failed to obtain file properties of source %d: %w", i, err)
+					}
+					missingDependencies = true
+					continue
+				}
+				sources = append(sources, model_core.Nested(sourceFileProperties, sourceFileProperties.Message.Contents))
+			}
+			if missingDependencies {
+				return PatchedFileRootValue[TMetadata]{}, evaluation.ErrMissingDependency
+			}
+
+			segmentsContentsEntry, err := model_filesystem.NewFileContentsEntryFromProto(model_core.Nested(segmentsFileProperties, segmentsFileProperties.Message.Contents))
+			if err != nil {
+				return PatchedFileRootValue[TMetadata]{}, fmt.Errorf("invalid contents of segment list: %w", err)
+			}
+			segments, err := model_filesystem.NewSegmentListReader(fileReader.FileOpenRead(ctx, segmentsContentsEntry, 0))
+			if err != nil {
+				return PatchedFileRootValue[TMetadata]{}, err
+			}
+			outputFileContents, err := model_filesystem.CreateComposedFileMerkleTree(
+				ctx,
+				fileCreationParameters,
+				segments,
+				sources,
+				composedFileMerkleTreeCapturer[TReference, TMetadata]{
+					FileMerkleTreeCapturer: model_filesystem.NewSimpleFileMerkleTreeCapturer(e),
+					ExistingObjectCapturer: e,
+				},
+			)
+			if err != nil {
+				return PatchedFileRootValue[TMetadata]{}, fmt.Errorf("failed to compose output file: %w", err)
+			}
+
+			components, err := getPackageOutputDirectoryComponents(model_core.Nested(variant, variant.Message.GetConfigurationReference()), fileLabel.GetCanonicalPackage(), key.Message.DirectoryLayout)
+			if err != nil {
+				outputFileContents.Discard()
+				return PatchedFileRootValue[TMetadata]{}, err
+			}
+
+			// Place the output file in a directory structure.
+			var createdDirectory model_filesystem.CreatedDirectory[TMetadata]
+			group, groupCtx := errgroup.WithContext(ctx)
+			group.Go(func() error {
+				return model_filesystem.CreateDirectoryMerkleTree(
+					groupCtx,
+					semaphore.NewWeighted(1),
+					group,
+					directoryCreationParameters,
+					&singleFileDirectory[TMetadata, TMetadata]{
+						components:   append(components, fileLabel.GetTargetName().ToComponents()...),
+						isExecutable: source.Compose.IsExecutable,
+						file:         model_filesystem.NewSimpleCapturableFile(outputFileContents),
+					},
+					model_filesystem.NewSimpleDirectoryMerkleTreeCapturer(e),
+					&createdDirectory,
+				)
+			})
+			if err := group.Wait(); err != nil {
+				return PatchedFileRootValue[TMetadata]{}, err
+			}
+
+			return model_core.NewPatchedMessage(
+				&model_analysis_pb.FileRoot_Value{
+					RootDirectory: createdDirectory.Message.Message,
+				},
+				createdDirectory.Message.Patcher,
+			), nil
 		case *model_analysis_pb.TargetOutputDefinition_StaticPackageDirectory_:
 			// Output file was already computed during configuration.
 			// For example by calling ctx.actions.write() or
@@ -1141,3 +1233,12 @@ func (cw *symlinkRecordingComponentWalker[TReference, TMetadata]) OnUp() (path.C
 // FileRootEnvironmentForTesting is used to generate mocks for unit
 // testing BaseComputer.
 type FileRootEnvironmentForTesting FileRootEnvironment[model_core.CreatedObjectTree, model_core.CreatedObjectTree]
+
+// composedFileMerkleTreeCapturer is used by ComputeFileRootValue() to
+// capture the objects that are created by
+// model_filesystem.CreateComposedFileMerkleTree(), and to reference the
+// objects of the source files.
+type composedFileMerkleTreeCapturer[TReference any, TMetadata model_core.ReferenceMetadata] struct {
+	model_filesystem.FileMerkleTreeCapturer[TMetadata]
+	model_core.ExistingObjectCapturer[TReference, TMetadata]
+}
