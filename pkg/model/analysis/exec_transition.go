@@ -11,12 +11,15 @@ import (
 
 	"bonanza.build/pkg/label"
 	model_core "bonanza.build/pkg/model/core"
+	"bonanza.build/pkg/model/core/btree"
 	"bonanza.build/pkg/model/evaluation"
 	model_starlark "bonanza.build/pkg/model/starlark"
 	model_analysis_pb "bonanza.build/pkg/proto/model/analysis"
 	model_core_pb "bonanza.build/pkg/proto/model/core"
 	model_starlark_pb "bonanza.build/pkg/proto/model/starlark"
 	"bonanza.build/pkg/starlark/eval"
+
+	"github.com/buildbarn/bb-storage/pkg/util"
 )
 
 type createInitialConfigurationEnvironment[TReference any, TMetadata model_core.ReferenceMetadata] interface {
@@ -116,6 +119,7 @@ func (c *baseComputer[TReference, TMetadata]) createInitialConfiguration(
 		analysisEncoders,
 		model_core.NewSimpleMessage[TReference]((*model_core_pb.DecodableReference)(nil)),
 		buildSettingValuesToApply,
+		/* keepExistingOverride = */ nil,
 		valueEncodingOptionsFactory.newValueEncodingOptions(ctx, nil),
 	)
 }
@@ -242,15 +246,36 @@ func (c *baseComputer[TReference, TMetadata]) ComputeExecTransitionValue(ctx con
 		buildSettingValuesToApply[platformsInsertionIndex:]...,
 	)
 
+	// Determine which user defined build settings retain their
+	// value in the exec configuration.
+	propagatingBuildSettings, err := c.getExecPropagatingBuildSettings(
+		ctx,
+		e,
+		analysisReaders,
+		valueReaders,
+		thread,
+		rootPackage,
+		inputConfigurationReference,
+	)
+	if err != nil {
+		return PatchedExecTransitionValue[TMetadata]{}, err
+	}
+
 	// Create new configuration to include any build settings
-	// yielded by the exec transition.
+	// yielded by the exec transition. All other build settings are
+	// reset to their default values, except for user defined build
+	// settings that propagate into the exec configuration.
 	outputConfigurationReference, err := c.applyTransition(
 		ctx,
 		thread,
 		e,
 		analysisEncoders,
-		model_core.NewSimpleMessage[TReference]((*model_core_pb.DecodableReference)(nil)),
+		inputConfigurationReference,
 		buildSettingValuesToApply,
+		func(label string) bool {
+			_, ok := propagatingBuildSettings[label]
+			return ok
+		},
 		valueEncodingOptionsFactory.newValueEncodingOptions(ctx, nil),
 	)
 	if err != nil {
@@ -263,4 +288,190 @@ func (c *baseComputer[TReference, TMetadata]) ComputeExecTransitionValue(ctx con
 		},
 		outputConfigurationReference.Patcher,
 	), nil
+}
+
+// execStarlarkFlagPropagation determines which user defined build
+// settings (i.e., ones not belonging to
+// @bazel_tools//command_line_option) retain their value when
+// transitioning to an exec configuration. This mirrors Bazel 9's
+// FunctionTransitionUtil.getExecPropagatingStarlarkFlags().
+type execStarlarkFlagPropagation struct {
+	// Value of --incompatible_exclude_starlark_flags_from_exec_config.
+	excludeByDefault bool
+	// Canonical labels of build settings provided to
+	// --experimental_propagate_custom_flag.
+	customFlags map[string]struct{}
+	// Canonical packages provided to
+	// --experimental_propagate_custom_flag in the form of "//pkg/...".
+	customFlagPackages []label.CanonicalPackage
+}
+
+func (p *execStarlarkFlagPropagation) shouldPropagate(buildSetting label.CanonicalLabel, scope *model_starlark_pb.BuildSettingScope) bool {
+	switch scope.GetKind().(type) {
+	case *model_starlark_pb.BuildSettingScope_Universal, *model_starlark_pb.BuildSettingScope_Project:
+		// Universal and project scoped build settings always
+		// propagate.
+		return true
+	case *model_starlark_pb.BuildSettingScope_Target, *model_starlark_pb.BuildSettingScope_Exec:
+		// TODO: Implement "exec:--<label>" scoping. Bazel 9
+		// does not support it.
+		return false
+	}
+
+	// Build settings that don't declare a scope propagate, unless
+	// --incompatible_exclude_starlark_flags_from_exec_config is set.
+	// In that case they only propagate if requested through
+	// --experimental_propagate_custom_flag.
+	if !p.excludeByDefault {
+		return true
+	}
+	if _, ok := p.customFlags[buildSetting.String()]; ok {
+		return true
+	}
+	buildSettingPackage := buildSetting.GetCanonicalPackage().String()
+	for _, customFlagPackage := range p.customFlagPackages {
+		prefix := customFlagPackage.String()
+		if buildSettingPackage == prefix || strings.HasPrefix(buildSettingPackage, strings.TrimSuffix(prefix, "/")+"/") {
+			return true
+		}
+	}
+	return false
+}
+
+// getExecPropagatingBuildSettings returns the labels of the user defined
+// build settings in a configuration whose values need to be retained
+// when transitioning to an exec configuration.
+func (c *baseComputer[TReference, TMetadata]) getExecPropagatingBuildSettings(
+	ctx context.Context,
+	e ExecTransitionEnvironment[TReference, TMetadata],
+	analysisReaders *AnalysisReaders[TReference],
+	valueReaders *model_starlark.ValueReaders[TReference],
+	thread *eval.Thread,
+	rootPackage label.CanonicalPackage,
+	configurationReference model_core.Message[*model_core_pb.DecodableReference, TReference],
+) (map[string]struct{}, error) {
+	if configurationReference.Message == nil {
+		// Default configuration. There is nothing to propagate.
+		return nil, nil
+	}
+
+	getBuildSettingValue := func(name string) (eval.Value, error) {
+		buildSettingLabel := commandLineOptionPlatformsLabel.GetCanonicalPackage().AppendTargetName(util.Must(label.NewTargetName(name))).String()
+		encodedValue, err := c.getBuildSettingValue(ctx, e, analysisReaders, valueReaders, rootPackage, buildSettingLabel, configurationReference)
+		if err != nil {
+			return nil, err
+		}
+		value, err := model_starlark.DecodeValue[TReference, TMetadata](thread, encodedValue, nil)
+		if err != nil {
+			return nil, fmt.Errorf("value of build setting %#v: %w", buildSettingLabel, err)
+		}
+		return value, nil
+	}
+	excludeByDefault, errExclude := getBuildSettingValue("incompatible_exclude_starlark_flags_from_exec_config")
+	customFlags, errCustomFlags := getBuildSettingValue("experimental_propagate_custom_flag")
+	if errExclude != nil {
+		return nil, errExclude
+	}
+	if errCustomFlags != nil {
+		return nil, errCustomFlags
+	}
+
+	excludeByDefaultBool, ok := excludeByDefault.(eval.Bool)
+	if !ok {
+		return nil, errors.New("value of build setting \"incompatible_exclude_starlark_flags_from_exec_config\" is not a bool")
+	}
+	p := execStarlarkFlagPropagation{
+		excludeByDefault: bool(excludeByDefaultBool),
+		customFlags:      map[string]struct{}{},
+	}
+	missingDependencies := false
+	if p.excludeByDefault {
+		customFlagsList, err := eval.Elements(thread, customFlags)
+		if err != nil {
+			return nil, fmt.Errorf("value of build setting \"experimental_propagate_custom_flag\": %w", err)
+		}
+		labelResolver := newLabelResolver(e)
+		for _, customFlag := range customFlagsList {
+			customFlagStr, ok := customFlag.(eval.String)
+			if !ok {
+				return nil, errors.New("value of build setting \"experimental_propagate_custom_flag\" is not a list of strings")
+			}
+			s := string(customFlagStr)
+			if !strings.HasPrefix(s, "//") && !strings.HasPrefix(s, "@") {
+				// --define flags are not supported.
+				continue
+			}
+			packagePattern, isPackagePattern := strings.CutSuffix(s, "/...")
+			if isPackagePattern {
+				s = packagePattern + ":__subpackages__"
+			}
+			apparentLabel, err := rootPackage.AppendLabel(s)
+			if err != nil {
+				return nil, fmt.Errorf("invalid value %#v for build setting \"experimental_propagate_custom_flag\": %w", string(customFlagStr), err)
+			}
+			canonicalLabel, err := label.Canonicalize(labelResolver, rootPackage.GetCanonicalRepo(), apparentLabel)
+			if err != nil {
+				if errors.Is(err, evaluation.ErrMissingDependency) {
+					missingDependencies = true
+					continue
+				}
+				return nil, fmt.Errorf("invalid value %#v for build setting \"experimental_propagate_custom_flag\": %w", string(customFlagStr), err)
+			}
+			if isPackagePattern {
+				p.customFlagPackages = append(p.customFlagPackages, canonicalLabel.GetCanonicalPackage())
+			} else {
+				p.customFlags[canonicalLabel.String()] = struct{}{}
+			}
+		}
+	}
+
+	// Iterate over all build settings in the configuration and
+	// determine whether user defined build settings propagate,
+	// based on their scope.
+	commandLineOptionPackage := commandLineOptionPlatformsLabel.GetCanonicalPackage()
+	propagatingBuildSettings := map[string]struct{}{}
+	var errIter error
+	for override := range btree.AllLeaves(
+		ctx,
+		analysisReaders.BuildSettingOverride,
+		getBuildSettingOverridesFromReference(configurationReference),
+		func(override model_core.Message[*model_analysis_pb.BuildSettingOverride, TReference]) (*model_core_pb.DecodableReference, error) {
+			return override.Message.GetParent().GetReference(), nil
+		},
+		&errIter,
+	) {
+		leaf := override.Message.GetLeaf()
+		if leaf == nil {
+			return nil, errors.New("build setting override is not a valid leaf")
+		}
+		buildSettingLabel, err := label.NewCanonicalLabel(leaf.Label)
+		if err != nil {
+			return nil, fmt.Errorf("invalid build setting label %#v: %w", leaf.Label, err)
+		}
+		if buildSettingLabel.GetCanonicalPackage() == commandLineOptionPackage {
+			// Native options are set by the exec transition
+			// itself.
+			continue
+		}
+
+		var scope *model_starlark_pb.BuildSettingScope
+		targetValue := e.GetTargetValue(&model_analysis_pb.Target_Key{Label: leaf.Label})
+		if !targetValue.IsSet() {
+			missingDependencies = true
+			continue
+		}
+		if ruleTarget := targetValue.Message.Definition.GetRuleTarget(); ruleTarget != nil {
+			scope = ruleTarget.BuildSetting.GetScope()
+		}
+		if p.shouldPropagate(buildSettingLabel, scope) {
+			propagatingBuildSettings[leaf.Label] = struct{}{}
+		}
+	}
+	if errIter != nil {
+		return nil, errIter
+	}
+	if missingDependencies {
+		return nil, evaluation.ErrMissingDependency
+	}
+	return propagatingBuildSettings, nil
 }
