@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"errors"
 	"fmt"
+	"log"
 	"maps"
 	"slices"
 	"sync"
@@ -1769,6 +1770,22 @@ func (vs *variableDependenciesComputedValueState[TReference, TMetadata]) buildGr
 	inlineCandidates := make(inlinedtree.CandidateList[*model_evaluation_pb.Graphlet, TMetadata], 0, 2)
 	defer inlineCandidates.Discard()
 
+	// DEBUG: Log graphlets that are slow to build, so that keys
+	// causing excessive nesting of dependencies can be identified.
+	buildStart := time.Now()
+	nestedCount := 0
+	defer func() {
+		if d := time.Since(buildStart); d > 2*time.Second {
+			keyType := "unknown"
+			if ks.keyMessageFetcher != nil {
+				if key, err := ks.keyMessageFetcher.getAny(ctx, rc); err == nil {
+					keyType = key.Message.TypeUrl
+				}
+			}
+			log.Printf("SLOW GRAPHLET %s key=%s direct=%d nested=%d took=%s", keyType, ks.keyReference.String(), len(vs.directVariableDependencies), nestedCount, d)
+		}
+	}()
+
 	graphletEvaluation, err := rc.buildGraphletEvaluation(ctx, value, vs.directVariableDependencies)
 	if err != nil {
 		return variableDependenciesMarshaledValueState[TReference, TMetadata]{}, model_core.Message[*model_evaluation_pb.Graphlet, TReference]{}, err
@@ -1785,6 +1802,7 @@ func (vs *variableDependenciesComputedValueState[TReference, TMetadata]) buildGr
 	gatherer.gatherDependencies(vs.directVariableDependencies)
 	rc.lock.RUnlock()
 	nestedVariableDependencies := sortedKeyStates(gatherer.nestedVariableDependencies)
+	nestedCount = len(nestedVariableDependencies)
 
 	evaluationsParentNodeComputer := rc.getEvaluationsParentNodeComputer(ctx)
 	dependencyEvaluationsList, err := rc.getEvaluationsForSortedList(ctx, nestedVariableDependencies)
