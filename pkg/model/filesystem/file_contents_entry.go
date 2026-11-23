@@ -49,74 +49,60 @@ type FileContentsEntry[TReference object.BasicReference] struct {
 	// UTF-8 and how many line breaks it contains.
 	utf8Stat utf8stat.Stat
 
-	// If set, the current entry is a slice of another file or
-	// literal data that is stored inline. Such entries may only be
+	// If set, the current entry is a slice of another file,
+	// optionally followed by literal data. Such entries may only be
 	// stored in file contents lists. contiguousCount is greater
 	// than zero, as these entries consist of data, but no reference
 	// is set.
-	composite *compositePart[TReference]
+	slice *slicePart[TReference]
 }
 
-// compositePart contains the properties of an entry in a file
-// contents list whose data is not stored in a chunk, but is either a
-// slice of another file or stored inline.
-type compositePart[TReference object.BasicReference] struct {
-	// If set, the entry is a slice of this file, starting at
-	// sourceOffsetBytes.
-	source            *FileContentsEntry[TReference]
+// slicePart contains the properties of an entry in a file contents
+// list whose data is a range of bytes of another file, optionally
+// followed by literal data.
+type slicePart[TReference object.BasicReference] struct {
+	source            FileContentsEntry[TReference]
 	sourceOffsetBytes uint64
-
-	// If source is not set, the literal data of the entry.
-	inline []byte
+	sourceSizeBytes   uint64
+	suffix            []byte
 }
 
 // newFileContentsListEntryFromProto constructs a FileContentsEntry
 // based on a FileContents message that is stored in a file contents
 // list. Unlike NewFileContentsEntryFromProto(), it permits the use of
-// slices and inline data.
+// slices.
 func newFileContentsListEntryFromProto[TReference object.BasicReference](fileContents model_core.Message[*model_filesystem_pb.FileContents, TReference]) (FileContentsEntry[TReference], error) {
-	switch level := fileContents.Message.GetLevel().(type) {
-	case *model_filesystem_pb.FileContents_Slice_:
-		sizeBytes := fileContents.Message.TotalSizeBytes
-		if sizeBytes < 1 {
-			return FileContentsEntry[TReference]{}, status.Error(codes.InvalidArgument, "Slice does not have any data")
-		}
-		source, err := NewFileContentsEntryFromProto(model_core.Nested(fileContents, level.Slice.Source))
-		if err != nil {
-			return FileContentsEntry[TReference]{}, util.StatusWrap(err, "Invalid slice source")
-		}
-		if source.GetReference() == nil {
-			return FileContentsEntry[TReference]{}, status.Error(codes.InvalidArgument, "Slice source must be a chunk or a file contents list")
-		}
-		offsetBytes := level.Slice.OffsetBytes
-		if offsetBytes > source.endBytes || sizeBytes > source.endBytes-offsetBytes {
-			return FileContentsEntry[TReference]{}, status.Errorf(codes.InvalidArgument, "Slice at offset %d with size %d exceeds the size of the source file, which is %d bytes", offsetBytes, sizeBytes, source.endBytes)
-		}
-		return FileContentsEntry[TReference]{
-			endBytes:        sizeBytes,
-			contiguousCount: 1,
-			composite: &compositePart[TReference]{
-				source:            &source,
-				sourceOffsetBytes: offsetBytes,
-			},
-		}, nil
-	case *model_filesystem_pb.FileContents_Inline:
-		if len(level.Inline) == 0 {
-			return FileContentsEntry[TReference]{}, status.Error(codes.InvalidArgument, "Inline data is empty")
-		}
-		if uint64(len(level.Inline)) != fileContents.Message.TotalSizeBytes {
-			return FileContentsEntry[TReference]{}, status.Errorf(codes.InvalidArgument, "Inline data is %d bytes in size, while %d bytes were expected", len(level.Inline), fileContents.Message.TotalSizeBytes)
-		}
-		return FileContentsEntry[TReference]{
-			endBytes:        fileContents.Message.TotalSizeBytes,
-			contiguousCount: 1,
-			composite: &compositePart[TReference]{
-				inline: level.Inline,
-			},
-		}, nil
-	default:
+	level, ok := fileContents.Message.GetLevel().(*model_filesystem_pb.FileContents_Slice_)
+	if !ok {
 		return NewFileContentsEntryFromProto(fileContents)
 	}
+	sizeBytes := fileContents.Message.TotalSizeBytes
+	suffix := level.Slice.Suffix
+	if sizeBytes <= uint64(len(suffix)) {
+		return FileContentsEntry[TReference]{}, status.Errorf(codes.InvalidArgument, "Slice has a total size of %d bytes, which does not exceed the size of its suffix", sizeBytes)
+	}
+	source, err := NewFileContentsEntryFromProto(model_core.Nested(fileContents, level.Slice.Source))
+	if err != nil {
+		return FileContentsEntry[TReference]{}, util.StatusWrap(err, "Invalid slice source")
+	}
+	if source.GetReference() == nil {
+		return FileContentsEntry[TReference]{}, status.Error(codes.InvalidArgument, "Slice source must be a chunk or a file contents list")
+	}
+	offsetBytes := level.Slice.OffsetBytes
+	sourceSizeBytes := sizeBytes - uint64(len(suffix))
+	if offsetBytes > source.endBytes || sourceSizeBytes > source.endBytes-offsetBytes {
+		return FileContentsEntry[TReference]{}, status.Errorf(codes.InvalidArgument, "Slice at offset %d with size %d exceeds the size of the source file, which is %d bytes", offsetBytes, sourceSizeBytes, source.endBytes)
+	}
+	return FileContentsEntry[TReference]{
+		endBytes:        sizeBytes,
+		contiguousCount: 1,
+		slice: &slicePart[TReference]{
+			source:            source,
+			sourceOffsetBytes: offsetBytes,
+			sourceSizeBytes:   sourceSizeBytes,
+			suffix:            suffix,
+		},
+	}, nil
 }
 
 // NewFileContentsEntryFromProto constructs a FileContentsEntry based on
@@ -164,8 +150,8 @@ func NewFileContentsEntryFromProto[TReference object.BasicReference](fileContent
 		contiguousCount = 1
 	case *model_filesystem_pb.FileContents_Hole:
 		contiguousCount = -1
-	case *model_filesystem_pb.FileContents_Slice_, *model_filesystem_pb.FileContents_Inline:
-		return FileContentsEntry[TReference]{}, status.Error(codes.InvalidArgument, "Slices and inline data may only be stored in file contents lists")
+	case *model_filesystem_pb.FileContents_Slice_:
+		return FileContentsEntry[TReference]{}, status.Error(codes.InvalidArgument, "Slices may only be stored in file contents lists")
 	default:
 		return FileContentsEntry[TReference]{}, status.Error(codes.InvalidArgument, "Unknown file contents level")
 	}
@@ -272,7 +258,7 @@ func (fce *FileContentsEntry[TReference]) GetUTF8Stat() utf8stat.Stat {
 // stored in this entry. If the current entry is a hole, this function
 // returns nil.
 func (fce *FileContentsEntry[TReference]) GetReference() *model_core.Decodable[TReference] {
-	if fce.contiguousCount < 0 || fce.composite != nil {
+	if fce.contiguousCount < 0 || fce.slice != nil {
 		return nil
 	}
 	return &fce.reference

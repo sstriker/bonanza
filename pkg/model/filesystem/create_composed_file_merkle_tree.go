@@ -20,10 +20,10 @@ import (
 )
 
 const (
-	// maximumInlineSizeBytes is the maximum size of data that is
-	// stored inline in file contents lists of composed files.
-	// Larger runs of data are stored as chunks.
-	maximumInlineSizeBytes = 1 << 10
+	// maximumSuffixSizeBytes is the maximum size of literal data that
+	// is stored as the suffix of a slice. Larger runs of data, and
+	// data that is not preceded by a slice, are stored as chunks.
+	maximumSuffixSizeBytes = 1 << 10
 
 	// maximumComposedChunkSizeBytes is the maximum size of chunks
 	// that are created to store data of composed files that is too
@@ -53,7 +53,7 @@ type composedFileMerkleTreeBuilder[TReference object.BasicReference, TMetadata m
 	context     context.Context
 	parameters  *FileCreationParameters
 	capturer    ComposedFileMerkleTreeCapturer[TReference, TMetadata]
-	sources     []model_core.Message[*model_filesystem_pb.FileContents, TReference]
+	sources     []FileContentsEntry[TReference]
 	treeBuilder btree.Builder[*model_filesystem_pb.FileContents, TMetadata]
 
 	// The first part of the file is not pushed into the B-tree
@@ -71,6 +71,7 @@ type composedFileMerkleTreeBuilder[TReference object.BasicReference, TMetadata m
 	pendingData        []byte
 	pendingInput       uint64
 	pendingOffsetBytes uint64
+	pendingSuffix      []byte
 }
 
 func (b *composedFileMerkleTreeBuilder[TReference, TMetadata]) pushPart(part model_core.PatchedMessage[*model_filesystem_pb.FileContents, TMetadata]) error {
@@ -118,20 +119,48 @@ func (b *composedFileMerkleTreeBuilder[TReference, TMetadata]) newChunkPart(data
 	}), nil
 }
 
-func (b *composedFileMerkleTreeBuilder[TReference, TMetadata]) newSlicePart(input, offsetBytes, sizeBytes uint64) model_core.PatchedMessage[*model_filesystem_pb.FileContents, TMetadata] {
-	source := model_core.Patch(b.capturer, b.sources[input])
-	return model_core.NewPatchedMessage(
-		&model_filesystem_pb.FileContents{
+// newSlicePart creates a part that refers to a range of bytes of a
+// source file, followed by a suffix. The message of the source file's
+// contents is constructed from scratch, as opposed to cloning the
+// original message, as composed files may contain millions of slices.
+func (b *composedFileMerkleTreeBuilder[TReference, TMetadata]) newSlicePart(input, offsetBytes, sizeBytes uint64, suffix []byte) model_core.PatchedMessage[*model_filesystem_pb.FileContents, TMetadata] {
+	source := &b.sources[input]
+	reference := source.reference
+	return model_core.MustBuildPatchedMessage(func(patcher *model_core.ReferenceMessagePatcher[TMetadata]) *model_filesystem_pb.FileContents {
+		sourceReference := &model_core_pb.DecodableReference{
+			Reference: patcher.AddReference(model_core.MetadataEntry[TMetadata]{
+				LocalReference: reference.Value.GetLocalReference(),
+				Metadata:       b.capturer.CaptureExistingObject(reference.Value),
+			}),
+			DecodingParameters: reference.GetDecodingParameters(),
+		}
+		sourceContents := &model_filesystem_pb.FileContents{
+			TotalSizeBytes: source.endBytes,
+			Utf8Stat:       uint64(source.utf8Stat),
+		}
+		if reference.Value.GetHeight() > 0 {
+			sourceContents.Level = &model_filesystem_pb.FileContents_List_{
+				List: &model_filesystem_pb.FileContents_List{
+					Reference: sourceReference,
+					Sparse:    source.contiguousCount == 0,
+				},
+			}
+		} else {
+			sourceContents.Level = &model_filesystem_pb.FileContents_ChunkReference{
+				ChunkReference: sourceReference,
+			}
+		}
+		return &model_filesystem_pb.FileContents{
 			Level: &model_filesystem_pb.FileContents_Slice_{
 				Slice: &model_filesystem_pb.FileContents_Slice{
-					Source:      source.Message,
+					Source:      sourceContents,
 					OffsetBytes: offsetBytes,
+					Suffix:      suffix,
 				},
 			},
-			TotalSizeBytes: sizeBytes,
-		},
-		source.Patcher,
-	)
+			TotalSizeBytes: sizeBytes + uint64(len(suffix)),
+		}
+	})
 }
 
 // flushPending emits the part that is currently being accumulated.
@@ -149,14 +178,6 @@ func (b *composedFileMerkleTreeBuilder[TReference, TMetadata]) flushPending() er
 	case pendingComposedPartData:
 		data := b.pendingData
 		b.pendingData = nil
-		if len(data) <= maximumInlineSizeBytes {
-			return b.pushPart(model_core.NewSimplePatchedMessage[TMetadata](&model_filesystem_pb.FileContents{
-				Level: &model_filesystem_pb.FileContents_Inline{
-					Inline: data,
-				},
-				TotalSizeBytes: uint64(len(data)),
-			}))
-		}
 		for len(data) > 0 {
 			piece := data[:min(len(data), maximumComposedChunkSizeBytes)]
 			data = data[len(piece):]
@@ -170,7 +191,9 @@ func (b *composedFileMerkleTreeBuilder[TReference, TMetadata]) flushPending() er
 		}
 		return nil
 	case pendingComposedPartSlice:
-		return b.pushPart(b.newSlicePart(b.pendingInput, b.pendingOffsetBytes, b.pendingSizeBytes))
+		suffix := b.pendingSuffix
+		b.pendingSuffix = nil
+		return b.pushPart(b.newSlicePart(b.pendingInput, b.pendingOffsetBytes, b.pendingSizeBytes, suffix))
 	default:
 		return nil
 	}
@@ -189,7 +212,20 @@ func (b *composedFileMerkleTreeBuilder[TReference, TMetadata]) addHole(sizeBytes
 }
 
 func (b *composedFileMerkleTreeBuilder[TReference, TMetadata]) addData(data []byte) error {
-	if b.pendingKind != pendingComposedPartData {
+	switch b.pendingKind {
+	case pendingComposedPartSlice:
+		if len(b.pendingSuffix)+len(data) <= maximumSuffixSizeBytes {
+			// Small amounts of data following a slice are
+			// stored as the suffix of the slice.
+			b.pendingSuffix = append(b.pendingSuffix, data...)
+			return nil
+		}
+		if err := b.flushPending(); err != nil {
+			return err
+		}
+		b.pendingKind = pendingComposedPartData
+	case pendingComposedPartData:
+	default:
 		if err := b.flushPending(); err != nil {
 			return err
 		}
@@ -203,7 +239,7 @@ func (b *composedFileMerkleTreeBuilder[TReference, TMetadata]) addData(data []by
 }
 
 func (b *composedFileMerkleTreeBuilder[TReference, TMetadata]) addSlice(input, offsetBytes, sizeBytes uint64) error {
-	if b.pendingKind == pendingComposedPartSlice && b.pendingInput == input && b.pendingOffsetBytes+b.pendingSizeBytes == offsetBytes {
+	if b.pendingKind == pendingComposedPartSlice && len(b.pendingSuffix) == 0 && b.pendingInput == input && b.pendingOffsetBytes+b.pendingSizeBytes == offsetBytes {
 		// Extend the previous slice, as it is contiguous with
 		// the current one.
 		b.pendingSizeBytes += sizeBytes
@@ -222,8 +258,9 @@ func (b *composedFileMerkleTreeBuilder[TReference, TMetadata]) addSlice(input, o
 // CreateComposedFileMerkleTree creates a Merkle tree for a file whose
 // contents are described by a segment list, without reading the
 // contents of the source files. Ranges of bytes of source files are
-// stored as slices, small amounts of literal data are stored inline,
-// and runs of null bytes are stored as holes. Reading the resulting
+// stored as slices, small amounts of literal data following them are
+// stored as suffixes of these slices, other literal data is stored as
+// chunks, and runs of null bytes are stored as holes. Reading the resulting
 // file causes the data of the source files to be read on demand.
 //
 // Sources may not themselves contain slices. This is not validated by
@@ -251,7 +288,7 @@ func CreateComposedFileMerkleTree[TReference object.BasicReference, TMetadata mo
 		context:     ctx,
 		parameters:  parameters,
 		capturer:    capturer,
-		sources:     sources,
+		sources:     sourceEntries,
 		treeBuilder: newFileContentsListBuilder(ctx, parameters, capturer),
 	}
 	defer func() {
@@ -316,44 +353,53 @@ func CreateComposedFileMerkleTree[TReference object.BasicReference, TMetadata mo
 		// Empty file.
 		return model_core.NewSimplePatchedMessage[TMetadata]((*model_filesystem_pb.FileContents)(nil)), nil
 	case 1:
-		// File consisting of a single part. Slices and inline
-		// data can only be stored in file contents lists, so
-		// they need to be converted.
+		// File consisting of a single part. Slices can only be
+		// stored in file contents lists, so they need to be
+		// converted.
 		part := b.firstPart
 		b.hasFirstPart = false
-		switch level := part.Message.Level.(type) {
-		case *model_filesystem_pb.FileContents_Slice_:
-			source := level.Slice.Source
-			sizeBytes := part.Message.TotalSizeBytes
-			if level.Slice.OffsetBytes == 0 && sizeBytes == source.TotalSizeBytes {
-				// Slice covers the entire source file.
-				// Use the contents of the source file.
-				return model_core.NewPatchedMessage(source, part.Patcher), nil
-			}
-			if sizeBytes < 2 {
-				part.Discard()
-				return model_core.PatchedMessage[*model_filesystem_pb.FileContents, TMetadata]{}, status.Error(codes.Unimplemented, "Composed files consisting of a single byte of a larger source file are not supported")
-			}
-			// Split the slice in two, so that it can be
-			// stored in a file contents list.
-			part.Discard()
-			for _, half := range [][2]uint64{
-				{level.Slice.OffsetBytes, sizeBytes / 2},
-				{level.Slice.OffsetBytes + sizeBytes/2, sizeBytes - sizeBytes/2},
-			} {
-				if err := b.treeBuilder.PushChild(b.newSlicePart(b.pendingInput, half[0], half[1])); err != nil {
-					return model_core.PatchedMessage[*model_filesystem_pb.FileContents, TMetadata]{}, err
-				}
-			}
-			return b.treeBuilder.FinalizeSingle()
-		case *model_filesystem_pb.FileContents_Inline:
-			data := level.Inline
-			part.Discard()
-			return b.newChunkPart(data)
-		default:
+		slice, ok := part.Message.Level.(*model_filesystem_pb.FileContents_Slice_)
+		if !ok {
 			// Holes and chunks can be stored as is.
 			return part, nil
 		}
+		suffix := slice.Slice.Suffix
+		offsetBytes := slice.Slice.OffsetBytes
+		sizeBytes := part.Message.TotalSizeBytes - uint64(len(suffix))
+		part.Discard()
+		source := &b.sources[b.pendingInput]
+		if len(suffix) == 0 && offsetBytes == 0 && sizeBytes == source.endBytes {
+			// Slice covers the entire source file. Use the
+			// contents of the source file.
+			return model_core.Patch(capturer, sources[b.pendingInput]), nil
+		}
+		// Split the part in two, so that it can be stored in a
+		// file contents list.
+		if len(suffix) > 0 {
+			if err := b.treeBuilder.PushChild(b.newSlicePart(b.pendingInput, offsetBytes, sizeBytes, nil)); err != nil {
+				return model_core.PatchedMessage[*model_filesystem_pb.FileContents, TMetadata]{}, err
+			}
+			chunk, err := b.newChunkPart(suffix)
+			if err != nil {
+				return model_core.PatchedMessage[*model_filesystem_pb.FileContents, TMetadata]{}, err
+			}
+			if err := b.treeBuilder.PushChild(chunk); err != nil {
+				return model_core.PatchedMessage[*model_filesystem_pb.FileContents, TMetadata]{}, err
+			}
+		} else {
+			if sizeBytes < 2 {
+				return model_core.PatchedMessage[*model_filesystem_pb.FileContents, TMetadata]{}, status.Error(codes.Unimplemented, "Composed files consisting of a single byte of a larger source file are not supported")
+			}
+			for _, half := range [][2]uint64{
+				{offsetBytes, sizeBytes / 2},
+				{offsetBytes + sizeBytes/2, sizeBytes - sizeBytes/2},
+			} {
+				if err := b.treeBuilder.PushChild(b.newSlicePart(b.pendingInput, half[0], half[1], nil)); err != nil {
+					return model_core.PatchedMessage[*model_filesystem_pb.FileContents, TMetadata]{}, err
+				}
+			}
+		}
+		return b.treeBuilder.FinalizeSingle()
 	default:
 		return b.treeBuilder.FinalizeSingle()
 	}

@@ -132,31 +132,20 @@ func (fr *FileReader[TReference]) getNextPart(ctx context.Context, fileContentsI
 
 // readPart reads the data of a part that is not a hole, starting at the
 // offset within the part. At most maximumSizeBytes bytes are returned.
-func (fr *FileReader[TReference]) readPart(ctx context.Context, part fileReaderPart[TReference], maximumSizeBytes uint64, depth int) ([]byte, error) {
-	if composite := part.entry.composite; composite != nil {
+func (fr *FileReader[TReference]) readPart(ctx context.Context, part fileReaderPart[TReference], maximumSizeBytes uint64) ([]byte, error) {
+	if slice := part.entry.slice; slice != nil {
 		readSizeBytes := min(maximumSizeBytes, part.sizeBytes-part.offsetBytes)
-		if composite.source == nil {
-			// Inline data.
-			return composite.inline[part.offsetBytes:][:readSizeBytes], nil
+		if part.offsetBytes >= slice.sourceSizeBytes {
+			// Only the suffix needs to be read.
+			return slice.suffix[part.offsetBytes-slice.sourceSizeBytes:][:readSizeBytes], nil
 		}
 
-		// Slice of another file. Slices may not refer to files
-		// that contain slices themselves, as that would permit
-		// constructing chains of slices of arbitrary length.
-		if depth > 0 {
-			return nil, status.Error(codes.InvalidArgument, "Slice source contains slices")
-		}
 		data := make([]byte, readSizeBytes)
-		fileContentsIterator := NewFileContentsIterator(*composite.source, composite.sourceOffsetBytes+part.offsetBytes)
-		if err := fr.walkChunksAndHoles(
-			ctx,
-			&fileContentsIterator,
-			readSizeBytes,
-			byteSliceChunkAndHoleWriter{output: data},
-			depth+1,
-		); err != nil {
+		sourceReadSizeBytes := min(readSizeBytes, slice.sourceSizeBytes-part.offsetBytes)
+		if err := fr.readSliceSource(ctx, slice, part.offsetBytes, data[:sourceReadSizeBytes]); err != nil {
 			return nil, util.StatusWrap(err, "Failed to read slice")
 		}
+		copy(data[sourceReadSizeBytes:], slice.suffix)
 		return data, nil
 	}
 
@@ -165,6 +154,38 @@ func (fr *FileReader[TReference]) readPart(ctx context.Context, part fileReaderP
 		return nil, err
 	}
 	return chunk[:min(maximumSizeBytes, uint64(len(chunk)))], nil
+}
+
+// readSliceSource reads data from the source file of a slice. As
+// slices are typically small and only span one or two chunks, chunks
+// are read sequentially. Parallelism is achieved by reading multiple
+// slices concurrently.
+func (fr *FileReader[TReference]) readSliceSource(ctx context.Context, slice *slicePart[TReference], offsetBytes uint64, output []byte) error {
+	fileContentsIterator := NewFileContentsIterator(slice.source, slice.sourceOffsetBytes+offsetBytes)
+	for len(output) > 0 {
+		part, err := fr.getNextPart(ctx, &fileContentsIterator)
+		if err != nil {
+			return err
+		}
+		readSizeBytes := min(uint64(len(output)), part.sizeBytes-part.offsetBytes)
+		if part.entry.IsHole() {
+			clear(output[:readSizeBytes])
+		} else if part.entry.slice != nil {
+			// Slices may not refer to files that contain
+			// slices themselves, as that would permit
+			// constructing chains of slices of arbitrary
+			// length.
+			return status.Error(codes.InvalidArgument, "Slice source contains slices")
+		} else {
+			chunk, err := fr.readChunk(ctx, *part.entry.GetReference(), part.offsetBytes, part.sizeBytes)
+			if err != nil {
+				return err
+			}
+			copy(output, chunk[:readSizeBytes])
+		}
+		output = output[readSizeBytes:]
+	}
+	return nil
 }
 
 func (fr *FileReader[TReference]) readChunk(ctx context.Context, partReference model_core.Decodable[TReference], partOffsetBytes, partSizeBytes uint64) ([]byte, error) {
@@ -192,7 +213,6 @@ func (fr *FileReader[TReference]) walkChunksAndHoles(
 	fileContentsIterator *FileContentsIterator[TReference],
 	outputSizeBytes uint64,
 	writer chunkAndHoleWriter,
-	depth int,
 ) error {
 	group, groupCtx := errgroup.WithContext(ctx)
 	group.Go(func() error {
@@ -209,16 +229,6 @@ func (fr *FileReader[TReference]) walkChunksAndHoles(
 				if err := writer.WriteHole(outputOffsetBytes, readSizeBytes); err != nil {
 					return err
 				}
-			} else if composite := part.entry.composite; composite != nil && composite.source == nil {
-				// Reached inline data, which can be
-				// copied without any I/O.
-				data, err := fr.readPart(groupCtx, part, readSizeBytes, depth)
-				if err != nil {
-					return err
-				}
-				if err := writer.WriteChunk(outputOffsetBytes, data); err != nil {
-					return err
-				}
 			} else {
 				// Reached a chunk or a slice of another
 				// file. Slices are read using a separate
@@ -226,7 +236,7 @@ func (fr *FileReader[TReference]) walkChunksAndHoles(
 				// reading chunks of the source file.
 				currentOutputOffsetBytes := outputOffsetBytes
 				concurrency := fr.fileChunkReaderConcurrency
-				if composite != nil {
+				if part.entry.slice != nil {
 					concurrency = fr.fileSliceReaderConcurrency
 				}
 				if err := util.AcquireSemaphore(groupCtx, concurrency, 1); err != nil {
@@ -235,7 +245,7 @@ func (fr *FileReader[TReference]) walkChunksAndHoles(
 				group.Go(func() error {
 					defer concurrency.Release(1)
 
-					data, err := fr.readPart(groupCtx, part, readSizeBytes, depth)
+					data, err := fr.readPart(groupCtx, part, readSizeBytes)
 					if err != nil {
 						return err
 					}
@@ -283,7 +293,6 @@ func (fr *FileReader[TReference]) FileReadAll(ctx context.Context, fileContents 
 		byteSliceChunkAndHoleWriter{
 			output: p,
 		},
-		/* depth = */ 0,
 	); err != nil {
 		return nil, err
 	}
@@ -302,7 +311,6 @@ func (fr *FileReader[TReference]) FileReadAt(ctx context.Context, fileContents F
 		byteSliceChunkAndHoleWriter{
 			output: p,
 		},
-		/* depth = */ 0,
 	); err != nil {
 		return 0, err
 	}
@@ -341,8 +349,8 @@ func (fr *FileReader[TReference]) FileSeek(ctx context.Context, fileContents Fil
 // offsetBytes, which lies within this range. If no region of the
 // requested type exists in the remainder of the part, nil is returned.
 func (fr *FileReader[TReference]) seekInPart(ctx context.Context, part *FileContentsEntry[TReference], startBytes, endBytes, offsetBytes uint64, regionType filesystem.RegionType) (*uint64, error) {
-	if part.composite != nil {
-		// Part is a slice of another file or inline data.
+	if part.slice != nil {
+		// Part is a slice of another file.
 		// Slices are considered to consist entirely of data,
 		// even if the source file contains holes.
 		if regionType == filesystem.Data {
@@ -455,7 +463,6 @@ func (fr *FileReader[TReference]) FileWriteTo(ctx context.Context, fileContents 
 		fileChunkAndHoleWriter{
 			file: file,
 		},
-		/* depth = */ 0,
 	)
 }
 
@@ -512,7 +519,7 @@ func (r *SequentialFileReader[TReference]) Read(p []byte) (int, error) {
 			r.holeSizeBytes = part.sizeBytes - part.offsetBytes
 			r.offsetBytes += r.holeSizeBytes
 		} else {
-			chunk, err := r.fileReader.readPart(r.context, part, part.sizeBytes-part.offsetBytes /* depth = */, 0)
+			chunk, err := r.fileReader.readPart(r.context, part, part.sizeBytes-part.offsetBytes)
 			if err != nil {
 				return nRead, err
 			}

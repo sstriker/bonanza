@@ -6,6 +6,7 @@ import (
 	"io"
 	"math/rand/v2"
 	"testing"
+	"time"
 
 	model_core "bonanza.build/pkg/model/core"
 	model_encoding "bonanza.build/pkg/model/encoding"
@@ -276,11 +277,62 @@ func TestCreateComposedFileMerkleTree(t *testing.T) {
 	})
 
 	t.Run("SliceAtTopLevel", func(t *testing.T) {
-		// Slices and inline data may only be stored in lists.
-		_, err := model_filesystem.NewFileContentsEntryFromProto(model_core.NewSimpleMessage[object.LocalReference](&model_filesystem_pb.FileContents{
-			Level:          &model_filesystem_pb.FileContents_Inline{Inline: []byte("Hello")},
+		// Slices may only be stored in lists.
+		_, err := model_filesystem.NewFileContentsEntryFromProto(model_core.Nested(sources[0], &model_filesystem_pb.FileContents{
+			Level: &model_filesystem_pb.FileContents_Slice_{
+				Slice: &model_filesystem_pb.FileContents_Slice{
+					Source:      sources[0].Message,
+					OffsetBytes: 0,
+				},
+			},
 			TotalSizeBytes: 5,
 		}))
 		require.Equal(t, codes.InvalidArgument, status.Code(err))
+	})
+
+	t.Run("LinkerLike", func(t *testing.T) {
+		// Compose a file out of a million segments, alternating
+		// between slices of tens of bytes and small runs of
+		// literal data, which is what relink emits for large
+		// executables. The resulting file contents lists span
+		// multiple levels. Every object containing a list of
+		// parts must refer to at least one other object.
+		var expected []byte
+		b := &segmentListBuilder{}
+		rng := rand.New(rand.NewPCG(5, 6))
+		for range 500000 {
+			input := rng.IntN(2)
+			data := [][]byte{source0Data, source1Data}[input]
+			size := rng.IntN(50) + 10
+			offset := rng.IntN(len(data) - size)
+			b.slice(uint64(input), uint64(offset), uint64(size))
+			expected = append(expected, data[offset:][:size]...)
+
+			literal := make([]byte, rng.IntN(5)+4)
+			for i := range literal {
+				literal[i] = byte(rng.Uint32())
+			}
+			b.inline(literal)
+			expected = append(expected, literal...)
+		}
+		segments := b.build(3)
+		start := time.Now()
+		fileContents, err := compose(segments, sources)
+		require.NoError(t, err)
+		t.Logf("Composing %d bytes out of %d segments took %s", len(expected), b.segmentsCount, time.Since(start))
+		entry := util.Must(model_filesystem.NewFileContentsEntryFromProto(fileContents))
+		require.GreaterOrEqual(t, entry.GetReference().Value.GetHeight(), 3)
+
+		start = time.Now()
+		actual, err := fileReader.FileReadAll(ctx, entry, 1<<30)
+		require.NoError(t, err)
+		require.Equal(t, expected, actual)
+		t.Logf("Reading the composed file took %s", time.Since(start))
+
+		start = time.Now()
+		sequential, err := io.ReadAll(fileReader.FileOpenRead(ctx, entry, 0))
+		require.NoError(t, err)
+		require.Equal(t, expected, sequential)
+		t.Logf("Reading the composed file sequentially took %s", time.Since(start))
 	})
 }

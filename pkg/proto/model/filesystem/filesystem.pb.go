@@ -332,7 +332,6 @@ type FileContents struct {
 	//	*FileContents_ChunkReference
 	//	*FileContents_Hole
 	//	*FileContents_Slice_
-	//	*FileContents_Inline
 	Level          isFileContents_Level `protobuf_oneof:"level"`
 	TotalSizeBytes uint64               `protobuf:"varint,4,opt,name=total_size_bytes,json=totalSizeBytes,proto3" json:"total_size_bytes,omitempty"`
 	Utf8Stat       uint64               `protobuf:"varint,5,opt,name=utf8_stat,json=utf8Stat,proto3" json:"utf8_stat,omitempty"`
@@ -413,15 +412,6 @@ func (x *FileContents) GetSlice() *FileContents_Slice {
 	return nil
 }
 
-func (x *FileContents) GetInline() []byte {
-	if x != nil {
-		if x, ok := x.Level.(*FileContents_Inline); ok {
-			return x.Inline
-		}
-	}
-	return nil
-}
-
 func (x *FileContents) GetTotalSizeBytes() uint64 {
 	if x != nil {
 		return x.TotalSizeBytes
@@ -456,10 +446,6 @@ type FileContents_Slice_ struct {
 	Slice *FileContents_Slice `protobuf:"bytes,6,opt,name=slice,proto3,oneof"`
 }
 
-type FileContents_Inline struct {
-	Inline []byte `protobuf:"bytes,7,opt,name=inline,proto3,oneof"`
-}
-
 func (*FileContents_List_) isFileContents_Level() {}
 
 func (*FileContents_ChunkReference) isFileContents_Level() {}
@@ -467,8 +453,6 @@ func (*FileContents_ChunkReference) isFileContents_Level() {}
 func (*FileContents_Hole) isFileContents_Level() {}
 
 func (*FileContents_Slice_) isFileContents_Level() {}
-
-func (*FileContents_Inline) isFileContents_Level() {}
 
 type MaybeInlineFileContents struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
@@ -1058,6 +1042,7 @@ type FileContents_Slice struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Source        *FileContents          `protobuf:"bytes,1,opt,name=source,proto3" json:"source,omitempty"`
 	OffsetBytes   uint64                 `protobuf:"varint,2,opt,name=offset_bytes,json=offsetBytes,proto3" json:"offset_bytes,omitempty"`
+	Suffix        []byte                 `protobuf:"bytes,3,opt,name=suffix,proto3" json:"suffix,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1106,6 +1091,13 @@ func (x *FileContents_Slice) GetOffsetBytes() uint64 {
 	return 0
 }
 
+func (x *FileContents_Slice) GetSuffix() []byte {
+	if x != nil {
+		return x.Suffix
+	}
+	return nil
+}
+
 var File_bonanza_build_pkg_proto_model_filesystem_filesystem_proto protoreflect.FileDescriptor
 
 const file_bonanza_build_pkg_proto_model_filesystem_filesystem_proto_rawDesc = "" +
@@ -1142,23 +1134,23 @@ const file_bonanza_build_pkg_proto_model_filesystem_filesystem_proto_rawDesc = "
 	"\x12DirectoryReference\x12s\n" +
 	"\treference\x18\x01 \x01(\v2&.bonanza.model.core.DecodableReferenceB-\xea\xd7 )\x1a'bonanza.model.filesystem.DirectoryEntryR\treference\x12+\n" +
 	"\x11directories_count\x18\x02 \x01(\rR\x10directoriesCount\x12g\n" +
-	"!maximum_symlink_escapement_levels\x18\x03 \x01(\v2\x1c.google.protobuf.UInt32ValueR\x1emaximumSymlinkEscapementLevels\"\x8a\x05\n" +
+	"!maximum_symlink_escapement_levels\x18\x03 \x01(\v2\x1c.google.protobuf.UInt32ValueR\x1emaximumSymlinkEscapementLevels\"\x8f\x05\n" +
 	"\fFileContents\x12A\n" +
 	"\x04list\x18\x01 \x01(\v2+.bonanza.model.filesystem.FileContents.ListH\x00R\x04list\x12Y\n" +
 	"\x0fchunk_reference\x18\x02 \x01(\v2&.bonanza.model.core.DecodableReferenceB\x06\xea\xd7 \x02\n" +
 	"\x00H\x00R\x0echunkReference\x12,\n" +
 	"\x04hole\x18\x03 \x01(\v2\x16.google.protobuf.EmptyH\x00R\x04hole\x12D\n" +
-	"\x05slice\x18\x06 \x01(\v2,.bonanza.model.filesystem.FileContents.SliceH\x00R\x05slice\x12\x18\n" +
-	"\x06inline\x18\a \x01(\fH\x00R\x06inline\x12(\n" +
+	"\x05slice\x18\x06 \x01(\v2,.bonanza.model.filesystem.FileContents.SliceH\x00R\x05slice\x12(\n" +
 	"\x10total_size_bytes\x18\x04 \x01(\x04R\x0etotalSizeBytes\x12\x1b\n" +
 	"\tutf8_stat\x18\x05 \x01(\x04R\butf8Stat\x1a\x91\x01\n" +
 	"\x04List\x12q\n" +
 	"\treference\x18\x01 \x01(\v2&.bonanza.model.core.DecodableReferenceB+\xea\xd7 '\x1a%bonanza.model.filesystem.FileContentsR\treference\x12\x16\n" +
-	"\x06sparse\x18\x02 \x01(\bR\x06sparse\x1aj\n" +
+	"\x06sparse\x18\x02 \x01(\bR\x06sparse\x1a\x82\x01\n" +
 	"\x05Slice\x12>\n" +
 	"\x06source\x18\x01 \x01(\v2&.bonanza.model.filesystem.FileContentsR\x06source\x12!\n" +
-	"\foffset_bytes\x18\x02 \x01(\x04R\voffsetBytesB\a\n" +
-	"\x05level\"\xa4\x01\n" +
+	"\foffset_bytes\x18\x02 \x01(\x04R\voffsetBytes\x12\x16\n" +
+	"\x06suffix\x18\x03 \x01(\fR\x06suffixB\a\n" +
+	"\x05levelJ\x04\b\a\x10\b\"\xa4\x01\n" +
 	"\x17MaybeInlineFileContents\x12)\n" +
 	"\x0fcontents_inline\x18\x01 \x01(\fH\x00R\x0econtentsInline\x12U\n" +
 	"\x11contents_external\x18\x02 \x01(\v2&.bonanza.model.filesystem.FileContentsH\x00R\x10contentsExternalB\a\n" +
@@ -1263,7 +1255,6 @@ func file_bonanza_build_pkg_proto_model_filesystem_filesystem_proto_init() {
 		(*FileContents_ChunkReference)(nil),
 		(*FileContents_Hole)(nil),
 		(*FileContents_Slice_)(nil),
-		(*FileContents_Inline)(nil),
 	}
 	file_bonanza_build_pkg_proto_model_filesystem_filesystem_proto_msgTypes[6].OneofWrappers = []any{
 		(*MaybeInlineFileContents_ContentsInline)(nil),
