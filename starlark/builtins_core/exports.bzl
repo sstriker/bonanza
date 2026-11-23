@@ -1444,10 +1444,13 @@ def builtins_internal_cc_internal_for_static_library(name, is_whole_archive):
     )
 
 def builtins_internal_cc_internal_freeze(value):
+    # Bazel returns an immutable copy of the value, which for lists
+    # is a tuple and for dicts is a dict. Callers such as rules_cc's
+    # create_lto_compilation_context() call .keys() on frozen dicts.
     if type(value) == "list":
         return tuple(value)
     if type(value) == "dict":
-        return tuple(value.items())
+        return dict(value)
     return value
 
 # Artifact name patterns that are registered by default.
